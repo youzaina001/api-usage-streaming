@@ -48,6 +48,7 @@ docker compose --env-file /dev/null -p api-usage-demo stop
 - The first valid delivery for an event ID wins. Exact repeats after UTC normalization become duplicates. Changed values become conflicts. Invalid deliveries leave the ID available for a later valid record.
 - Run `usage-stream consume` to follow the topic or use `--until-high-watermark` to process up to the offset captured at startup. Bounded consume defaults to 30 seconds. `--batch-size` defaults to 100 and accepts 1 through 1,000.
 - Exit codes are 0 for success, 2 for invalid arguments, 3 for unsafe topic or offset, 4 for a stale checkpoint, 5 for an operation failure, and 6 for a bounded consume timeout. A timeout can leave committed deliveries and an advanced checkpoint. A retry resumes from that checkpoint. Following consume can be stopped with Ctrl+C.
+- Each batch commits its facts, delivery outcomes, and next offset together. A consumer killed before the commit leaves the old offset and no rows from that batch. A consumer killed after the commit resumes after that batch. If the commit succeeds but the client sees an error, the command exits 5 and a restart continues from the saved offset. Two workers that fetched from the same offset cannot both commit: the second exits 4 without writing.
 
 Use one pipeline per database. Global options before the command set `--broker`, `--topic`, and `--pipeline`, or set `USAGE_BROKER`, `USAGE_TOPIC`, and `USAGE_PIPELINE`. To use a new database, initialize the schema and set `USAGE_INSTALLER_DSN` and `USAGE_CONSUMER_DSN` to the separate role connections. `USAGE_KAFKA_PORT` and `USAGE_POSTGRES_PORT` change both the Compose ports and the CLI's loopback defaults. Broker selection takes the first available value from `--broker`, `USAGE_BROKER`, and the loopback default. Keep the supplied demo credentials on loopback.
 
@@ -72,6 +73,40 @@ From the repository root, use two free loopback ports. Compose initializes the `
 
 The rerun reports `Next offset 6` and stops its Compose project. Its volumes remain available for inspection.
 
+## Backfill a dated archive
+
+`usage-stream backfill --file PATH --manifest PATH` publishes a JSONL file of usage events for one UTC day. The manifest is a JSON object with exactly `day`, `sha256` (lowercase hex of all file bytes), and `row_count`:
+
+```bash
+uv run --locked usage-stream backfill \
+  --file tests/fixtures/archive-2026-11-21.jsonl \
+  --manifest tests/fixtures/archive-2026-11-21.manifest.json
+uv run --locked usage-stream consume --until-high-watermark
+```
+
+Validation happens before any record is sent. The file can be at most 16 MiB and 50,000 rows, with LF row separators, an optional final LF, and no blank rows. Each row must be a valid event of at most 16,384 bytes whose UTC event time falls on the manifest day. Any failure exits 2 and publishes nothing. The command publishes the validated bytes in file order with the event IDs as keys, so a later change to the file cannot reach Kafka.
+
+After the demo above, the archive adds event D to 2026-11-21, which becomes 2 requests, 12 input tokens, and 4 output tokens. Its copy of event C counts as a duplicate. Running the same backfill again appends two more duplicates and leaves the totals unchanged. Kafka stamps each record with its append time for retention, while the event time decides the usage day.
+
+If publication is uncertain, the command exits 5 and reports how many rows Kafka confirmed. That number is a lower bound, because a row can reach Kafka without its acknowledgement reaching the client. Rerun the whole file. Rows already present become duplicates and the missing rows are added.
+
+### Rebuild after a replaced topic or expired offset
+
+When consume exits 3 because the topic changed or retention passed the saved offset, keep the existing database for inspection and rebuild into a new topic and database. Initialize the schema in the new database, then pass explicit options before each command:
+
+```bash
+uv run --locked usage-stream --topic api-usage-rebuild \
+  --installer-dsn "$REBUILD_INSTALLER_DSN" --consumer-dsn "$REBUILD_CONSUMER_DSN" setup
+uv run --locked usage-stream --topic api-usage-rebuild \
+  --installer-dsn "$REBUILD_INSTALLER_DSN" --consumer-dsn "$REBUILD_CONSUMER_DSN" \
+  backfill --file ARCHIVE --manifest MANIFEST
+uv run --locked usage-stream --topic api-usage-rebuild \
+  --installer-dsn "$REBUILD_INSTALLER_DSN" --consumer-dsn "$REBUILD_CONSUMER_DSN" \
+  consume --until-high-watermark
+```
+
+The rebuilt totals describe only the inputs replayed into the new database. Deliveries that exist in no archive cannot be recovered. Replay archives in their original order, because the first valid record for an event ID wins and a different order of conflicting records can change the winning fact. Record the order and the manifest checksums used for each rebuild.
+
 ## Verify
 
 ```bash
@@ -86,4 +121,4 @@ Enable the integration suite against a disposable Compose project running these 
 USAGE_TEST_INTEGRATION=1 uv run --locked pytest -q
 ```
 
-Each integration case uses a new topic and initialized database. The suite includes a transaction marker that the real consumer must skip, read-only reporting checks, and an independent reference for the seeded fixture. Backfill and performance measurements are the next project units.
+Each integration case uses a new topic and initialized database. The suite includes a transaction marker that the real consumer must skip, read-only reporting checks, and an independent reference for the seeded fixture. Recovery tests run the consumer in a child process that pauses at private points around the database commit, then kill it, race a second worker against it, or replace and truncate the topic while it waits. Backfill tests cover archive limits, retry after partial publication, and a rebuild into a fresh topic and database. Performance measurements are the next project unit.

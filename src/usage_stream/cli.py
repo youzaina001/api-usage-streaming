@@ -2,13 +2,20 @@ import argparse
 import os
 import sys
 from math import isfinite
+from pathlib import Path
 
 import psycopg
 from confluent_kafka import KafkaException
 from psycopg.conninfo import make_conninfo
 
 from .consumer import IngestionTimeout, KafkaPartition, consume, setup
-from .source import fixture_deliveries, publish
+from .source import (
+    ArchiveError,
+    PublicationUncertain,
+    fixture_deliveries,
+    publish,
+    read_archive,
+)
 from .storage import SourceGuardError, StaleCheckpoint, Storage
 
 
@@ -34,6 +41,9 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("setup")
     commands.add_parser("publish-fixture")
+    backfill_args = commands.add_parser("backfill")
+    backfill_args.add_argument("--file", type=Path, required=True)
+    backfill_args.add_argument("--manifest", type=Path, required=True)
     consume_args = commands.add_parser("consume")
     consume_args.add_argument("--until-high-watermark", action="store_true")
     consume_args.add_argument("--timeout-seconds", type=float)
@@ -52,6 +62,15 @@ def main() -> int:
     try:
         if args.command == "publish-fixture":
             acknowledged = publish(args.broker, args.topic, fixture_deliveries())
+            print(f"Acknowledged {acknowledged} deliveries")
+            return 0
+        if args.command == "backfill":
+            try:
+                deliveries = read_archive(args.file, args.manifest)
+            except (ArchiveError, OSError) as exc:
+                print(f"Archive rejected: {exc}", file=sys.stderr)
+                return 2
+            acknowledged = publish(args.broker, args.topic, deliveries)
             print(f"Acknowledged {acknowledged} deliveries")
             return 0
 
@@ -79,6 +98,9 @@ def main() -> int:
     except StaleCheckpoint as exc:
         print(f"Stale checkpoint: {exc}", file=sys.stderr)
         return 4
+    except PublicationUncertain as exc:
+        print(f"Publication uncertain: {exc}; rerun the whole file", file=sys.stderr)
+        return 5
     except KafkaException as exc:
         print(f"Kafka operation failed: {exc}", file=sys.stderr)
         return 5

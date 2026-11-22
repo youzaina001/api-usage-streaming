@@ -18,6 +18,7 @@ from confluent_kafka.admin import (  # type: ignore[attr-defined]
     TopicDescription,
 )
 
+from . import _seams
 from .source import TOPIC_CONFIG
 from .storage import Checkpoint, Delivery, SourceGuardError, Storage
 
@@ -155,6 +156,7 @@ def consume(
             raise IngestionTimeout(f"consume timed out at offset {cursor}")
         deliveries = source.poll(topic_id, batch_size, min(POLL_WINDOW, remaining))
         if deliveries:
+            _seams.reached("fetched", deliveries[-1].offset)
             source.check(topic_id, cursor, deliveries[-1].offset)
             if deadline is not None and monotonic() >= deadline:
                 raise IngestionTimeout(f"consume timed out at offset {cursor}")

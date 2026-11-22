@@ -1,0 +1,2 @@
+{"schema_version":1,"event_id":"e944f6d9-c1a2-5cb0-a047-a48f2f069579","event_time":"2026-11-22T00:30:00+01:00","project_id":"project-a","model_id":"model-a","input_tokens":5,"output_tokens":1}
+{"schema_version":1,"event_id":"ce4eeea4-8391-5713-bd9b-58c107079022","event_time":"2026-11-21T18:00:00Z","project_id":"project-a","model_id":"model-a","input_tokens":7,"output_tokens":3}
