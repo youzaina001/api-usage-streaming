@@ -109,14 +109,14 @@ class Storage:
         values = (event.event_time, event.project_id, event.model_id,
                   event.input_tokens, event.output_tokens)
         existing = self.conn.execute("""
-            SELECT event_time, project_id, model_id, input_tokens, output_tokens
+            SELECT event_time = %s, project_id, model_id, input_tokens, output_tokens
             FROM warehouse.usage_event WHERE event_id = %s
-        """, (event.event_id,)).fetchone()
+        """, (event.event_time, event.event_id)).fetchone()
         outcome: Outcome
         if existing is None:
             outcome = "accepted"
         else:
-            outcome = "duplicate" if existing == values else "conflict"
+            outcome = "duplicate" if existing == (True, *values[1:]) else "conflict"
         self.conn.execute("""
             INSERT INTO ops.delivery (topic_id, partition, "offset", outcome,
                                       reason, event_id, payload_sha256)

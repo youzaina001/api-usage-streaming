@@ -47,16 +47,19 @@ class Demo:
             [NewTopic(self.topic, partitions, 1, config=TOPIC_CONFIG)], request_timeout=15,
         )[self.topic].result(timeout=16)
 
+    def cli_env(self) -> dict[str, str]:
+        return {
+            "USAGE_BROKER": self.broker,
+            "USAGE_TOPIC": self.topic,
+            "USAGE_PIPELINE": "usage",
+            "USAGE_INSTALLER_DSN": self.dsn("installer", "usage-installer-local"),
+            "USAGE_CONSUMER_DSN": self.dsn("usage_consumer", "usage-consumer-local"),
+        }
+
     def cli(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [str(Path(sys.executable).with_name("usage-stream")), *args],
-            env=os.environ | {
-                "USAGE_BROKER": self.broker,
-                "USAGE_TOPIC": self.topic,
-                "USAGE_PIPELINE": "usage",
-                "USAGE_INSTALLER_DSN": self.dsn("installer", "usage-installer-local"),
-                "USAGE_CONSUMER_DSN": self.dsn("usage_consumer", "usage-consumer-local"),
-            },
+            env=os.environ | self.cli_env(),
             check=False, capture_output=True, text=True, timeout=45,
         )
 

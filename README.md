@@ -36,16 +36,41 @@ SQL
 
 The first run has six deliveries: three accepted, one duplicate, one conflict, and one invalid. Running consume again reaches the same offset and leaves the views unchanged. Running the publisher again appends six deliveries and preserves the usage totals.
 
+Stop the demo after checking the results:
+
+```bash
+docker compose --env-file /dev/null -p api-usage-demo stop
+```
+
 ## Source and recovery
 
 - Setup binds the PostgreSQL checkpoint to the Kafka topic ID and partition. Consume starts at the saved offset with Kafka offset commits disabled. If the binding or broker bounds change, the command stops and reports the failure.
 - The first valid delivery for an event ID wins. Exact repeats after UTC normalization become duplicates. Changed values become conflicts. Invalid deliveries leave the ID available for a later valid record.
 - Run `usage-stream consume` to follow the topic or use `--until-high-watermark` to process up to the offset captured at startup. Bounded consume defaults to 30 seconds. `--batch-size` defaults to 100 and accepts 1 through 1,000.
-- Exit codes are 0 for success, 2 for invalid arguments, 3 for unsafe topic or offset, 4 for a stale checkpoint, 5 for an operation failure, and 6 for a bounded consume timeout. Following consume can be stopped with Ctrl+C.
+- Exit codes are 0 for success, 2 for invalid arguments, 3 for unsafe topic or offset, 4 for a stale checkpoint, 5 for an operation failure, and 6 for a bounded consume timeout. A timeout can leave committed deliveries and an advanced checkpoint. A retry resumes from that checkpoint. Following consume can be stopped with Ctrl+C.
 
-Use one pipeline per database. Global options before the command set `--broker`, `--topic`, and `--pipeline`, or set `USAGE_BROKER`, `USAGE_TOPIC`, and `USAGE_PIPELINE`. To use a new database, initialize the schema and set `USAGE_INSTALLER_DSN` and `USAGE_CONSUMER_DSN` to the separate role connections. Use `USAGE_KAFKA_PORT` and `USAGE_POSTGRES_PORT` to change the Compose ports. Keep the supplied demo credentials on loopback.
+Use one pipeline per database. Global options before the command set `--broker`, `--topic`, and `--pipeline`, or set `USAGE_BROKER`, `USAGE_TOPIC`, and `USAGE_PIPELINE`. To use a new database, initialize the schema and set `USAGE_INSTALLER_DSN` and `USAGE_CONSUMER_DSN` to the separate role connections. `USAGE_KAFKA_PORT` and `USAGE_POSTGRES_PORT` change both the Compose ports and the CLI's loopback defaults. Broker selection takes the first available value from `--broker`, `USAGE_BROKER`, and the loopback default. Keep the supplied demo credentials on loopback.
 
-For a clean rerun, stop the demo with `docker compose --env-file /dev/null -p api-usage-demo stop`. Use a fresh Compose project name for the next run. Compose creates that project's volumes and initializes a fresh database. The original project's data stays available. If both projects need to run at once, choose different ports and pass the new address to `USAGE_BROKER`.
+### Clean rerun
+
+From the repository root, use two free loopback ports. Compose initializes the `usage` database on a fresh volume for the new project. Setup creates the topic selected by `USAGE_TOPIC`.
+
+```bash
+(
+  set -e
+  project="api-usage-rerun-$(date -u +%Y%m%d%H%M%S)"
+  export USAGE_TOPIC="$project"
+  export USAGE_KAFKA_PORT=29092 USAGE_POSTGRES_PORT=25432
+  unset USAGE_BROKER USAGE_INSTALLER_DSN USAGE_CONSUMER_DSN
+  trap 'docker compose --env-file /dev/null -p "$project" stop' EXIT
+  docker compose --env-file /dev/null -p "$project" up -d --wait
+  uv run --locked usage-stream setup
+  uv run --locked usage-stream publish-fixture
+  uv run --locked usage-stream consume --until-high-watermark --timeout-seconds 30
+)
+```
+
+The rerun reports `Next offset 6` and stops its Compose project. Its volumes remain available for inspection.
 
 ## Verify
 

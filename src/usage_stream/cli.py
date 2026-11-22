@@ -21,7 +21,8 @@ def _demo_dsn(role: str, password: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="usage-stream")
-    parser.add_argument("--broker", default=os.environ.get("USAGE_BROKER", "127.0.0.1:19092"))
+    kafka_port = os.environ.get("USAGE_KAFKA_PORT") or "19092"
+    parser.add_argument("--broker", default=os.environ.get("USAGE_BROKER", f"127.0.0.1:{kafka_port}"))
     parser.add_argument("--topic", default=os.environ.get("USAGE_TOPIC", "api-usage"))
     parser.add_argument("--pipeline", default=os.environ.get("USAGE_PIPELINE", "usage"))
     parser.add_argument("--installer-dsn", default=os.environ.get(

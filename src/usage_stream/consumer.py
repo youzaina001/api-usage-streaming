@@ -84,9 +84,13 @@ class KafkaPartition:
                     raise
         topic_id = self._topic_id()
         resource = ConfigResource(ResourceType.TOPIC, self.topic)
-        entries = self.admin.describe_configs(
-            [resource], request_timeout=RPC_TIMEOUT,
-        )[resource].result(timeout=RPC_TIMEOUT + 1)
+        try:
+            entries = self.admin.describe_configs(
+                [resource], request_timeout=RPC_TIMEOUT,
+            )[resource].result(timeout=RPC_TIMEOUT + 1)
+        except KafkaException as exc:
+            _check_broker_error(exc.args[0])
+            raise
         if any(entries[key].value != value for key, value in TOPIC_CONFIG.items()):
             raise SourceGuardError("topic retention or timestamp configuration is incompatible")
         return topic_id
@@ -157,7 +161,10 @@ def consume(
             if target is not None:
                 deliveries = [delivery for delivery in deliveries if delivery.offset < target]
             cursor = storage.apply_batch(pipeline_id, topic_id, 0, cursor, deliveries)
-            idle_check = monotonic() + 1
+            now = monotonic()
+            if deadline is not None and now >= deadline:
+                raise IngestionTimeout(f"consume timed out at offset {cursor}")
+            idle_check = now + 1
         elif monotonic() >= idle_check:
             source.check(topic_id, cursor)
             idle_check = monotonic() + 1

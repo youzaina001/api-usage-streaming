@@ -1,21 +1,39 @@
 import json
+import sys
+from collections.abc import Sequence
+from concurrent.futures import Future
 from dataclasses import replace
-from uuid import uuid4
+from time import monotonic
+from uuid import UUID, uuid4
 
 import psycopg
 import pytest
 from confluent_kafka import (
     KafkaError,
+    KafkaException,
     Message,
     Producer,
     TopicCollection,
     TopicPartition,
 )
-from confluent_kafka.admin import ConfigResource, ResourceType  # type: ignore[attr-defined]
+from confluent_kafka.admin import (  # type: ignore[attr-defined]
+    AdminClient,
+    ConfigResource,
+    ResourceType,
+)
+from psycopg import sql
 
+from usage_stream import cli, consumer
 from usage_stream.storage import Delivery, SourceGuardError, Storage
 
 from .conftest import FIXTURES, ROOT, TOPIC_CONFIG, Demo
+
+
+def call_cli(demo: Demo, monkeypatch: pytest.MonkeyPatch, *args: str) -> int:
+    for name, value in demo.cli_env().items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(sys, "argv", ["usage-stream", *args])
+    return cli.main()
 
 
 def fixture_deliveries() -> list[tuple[bytes, bytes]]:
@@ -171,6 +189,72 @@ def test_empty_poll_leaves_checkpoint(demo: Demo) -> None:
     assert bounded.stdout.strip() == "Next offset 0"
 
 
+def test_final_commit_crossing_deadline_times_out_with_durable_progress(
+    demo: Demo, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    setup = demo.cli("setup")
+    assert setup.returncode == 0, setup.stderr
+    assert publish(demo, fixture_deliveries()[:1]) == [0]
+
+    apply_batch = Storage.apply_batch
+
+    def delayed_batch(
+        storage: Storage, pipeline_id: str, topic_id: UUID, partition: int,
+        next_offset: int, deliveries: Sequence[Delivery],
+    ) -> int:
+        committed_offset = apply_batch(storage, pipeline_id, topic_id, partition, next_offset, deliveries)
+        monkeypatch.setattr(consumer, "monotonic", lambda: monotonic() + 30)
+        return committed_offset
+
+    monkeypatch.setattr(Storage, "apply_batch", delayed_batch)
+    result = call_cli(demo, monkeypatch, "consume", "--until-high-watermark", "--timeout-seconds", "15")
+    output = capsys.readouterr()
+    assert result == 6, output
+    assert "offset 1" in output.err
+
+    retry = demo.cli("consume", "--until-high-watermark")
+    assert retry.returncode == 0, retry.stderr
+    assert retry.stdout.strip() == "Next offset 1"
+    with demo.report() as conn:
+        assert conn.execute("SELECT * FROM reporting.delivery_reconciliation").fetchone() == (
+            1, 1, 0, 0, 0,
+        )
+
+
+@pytest.mark.parametrize(("timezone", "timestamps", "first_utc"), [
+    pytest.param("America/New_York", (
+        "2026-11-01T01:30:00-05:00", "2026-11-01T06:30:00Z", "2026-11-01T01:30:00-04:00",
+    ), "2026-11-01 06:30:00", id="dst-fold"),
+    pytest.param("Pacific/Kiritimati", (
+        "9999-12-31T23:59:59Z", "9999-12-31T22:59:59-01:00", "9999-12-31T22:59:59Z",
+    ), "9999-12-31 23:59:59", id="local-year-10000"),
+])
+def test_equivalent_timestamps_are_duplicates(
+    demo: Demo, timezone: str, timestamps: tuple[str, str, str], first_utc: str,
+) -> None:
+    with psycopg.connect(demo.dsn("postgres", "usage-bootstrap-local"), autocommit=True) as conn:
+        conn.execute(sql.SQL("ALTER DATABASE {} SET TimeZone TO {}").format(
+            sql.Identifier(demo.db), sql.Literal(timezone),
+        ))
+    setup = demo.cli("setup")
+    assert setup.returncode == 0, setup.stderr
+    key, payload = fixture_deliveries()[0]
+    event = json.loads(payload)
+    assert publish(demo, [
+        (key, json.dumps(event | {"event_time": timestamp}).encode())
+        for timestamp in timestamps
+    ]) == [0, 1, 2]
+    result = demo.cli("consume", "--until-high-watermark")
+    assert result.returncode == 0, result.stderr
+    with psycopg.connect(demo.dsn("usage_consumer", "usage-consumer-local")) as conn:
+        outcomes = conn.execute('SELECT outcome FROM ops.delivery ORDER BY "offset"').fetchall()
+        assert outcomes == [("accepted",), ("duplicate",), ("conflict",)]
+        assert conn.execute("""
+            SELECT event_time AT TIME ZONE 'UTC' = %s::timestamp
+            FROM warehouse.usage_event
+        """, (first_utc,)).fetchone() == (True,)
+
+
 def test_offsets_need_not_be_contiguous(demo: Demo) -> None:
     setup = demo.cli("setup")
     assert setup.returncode == 0, setup.stderr
@@ -209,6 +293,29 @@ def test_setup_rejects_wrong_partition_count(demo: Demo) -> None:
     demo.new_topic(partitions=2)
     setup = demo.cli("setup")
     assert setup.returncode == 3, setup.stderr
+
+
+@pytest.mark.parametrize(("error_code", "exit_code"), [
+    (KafkaError.UNKNOWN_TOPIC_OR_PART, 3),
+    (KafkaError._TIMED_OUT, 5),
+])
+def test_setup_classifies_config_lookup_errors(
+    demo: Demo, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    error_code: int, exit_code: int,
+) -> None:
+    setup = demo.cli("setup")
+    assert setup.returncode == 0, setup.stderr
+
+    def failed_configs(
+        _admin: AdminClient, resources: list[ConfigResource], *, request_timeout: float,
+    ) -> dict[ConfigResource, Future[object]]:
+        future: Future[object] = Future()
+        future.set_exception(KafkaException(KafkaError(error_code)))
+        return {resources[0]: future}
+
+    monkeypatch.setattr(AdminClient, "describe_configs", failed_configs)
+    result = call_cli(demo, monkeypatch, "setup")
+    assert result == exit_code, capsys.readouterr()
 
 
 def test_consume_does_not_create_missing_topic(demo: Demo) -> None:
