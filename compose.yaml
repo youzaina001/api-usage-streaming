@@ -1,0 +1,43 @@
+services:
+  kafka:
+    image: apache/kafka:4.1.2@sha256:5cc2a2fd93fa2687b44015eee04fb2c3edd9e526bd64bf8bec5ff1e268772e0e
+    ports:
+      - "127.0.0.1:${USAGE_KAFKA_PORT:-19092}:${USAGE_KAFKA_PORT:-19092}"
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:${USAGE_KAFKA_PORT:-19092},CONTROLLER://127.0.0.1:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:${USAGE_KAFKA_PORT:-19092}
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@127.0.0.1:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms256M -Xmx512M
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+  postgres:
+    image: postgres:17-bookworm@sha256:837bed18782820fe967067cb5328b02b0d9992c1be9a37ee0c9c492cfc03af3b
+    ports:
+      - "127.0.0.1:${USAGE_POSTGRES_PORT:-15432}:5432"
+    environment:
+      POSTGRES_DB: usage
+      POSTGRES_PASSWORD: usage-bootstrap-local
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./sql/000_roles.sql:/docker-entrypoint-initdb.d/000_roles.sql:ro
+      - ./sql/001_usage.sql:/docker-entrypoint-initdb.d/001_usage.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-d", "usage"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  kafka-data:
+  postgres-data:
