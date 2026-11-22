@@ -1,0 +1,56 @@
+[
+  {
+    "schema_version": 1,
+    "event_id": "8853f64f-cdfc-5d0f-8625-a8dce9b56cec",
+    "event_time": "2026-11-22T12:00:00Z",
+    "project_id": "project-a",
+    "model_id": "model-a",
+    "input_tokens": 10,
+    "output_tokens": 2
+  },
+  {
+    "schema_version": 1,
+    "event_id": "e7fd6d02-9629-5e61-8fb9-0c9dafae7d6c",
+    "event_time": "2026-11-22T13:00:00Z",
+    "project_id": "project-a",
+    "model_id": "model-a",
+    "input_tokens": 20,
+    "output_tokens": 4
+  },
+  {
+    "schema_version": 1,
+    "event_id": "8853f64f-cdfc-5d0f-8625-a8dce9b56cec",
+    "event_time": "2026-11-22T13:00:00+01:00",
+    "project_id": "project-a",
+    "model_id": "model-a",
+    "input_tokens": 10,
+    "output_tokens": 2
+  },
+  {
+    "schema_version": 1,
+    "event_id": "8853f64f-cdfc-5d0f-8625-a8dce9b56cec",
+    "event_time": "2026-11-22T12:00:00Z",
+    "project_id": "project-a",
+    "model_id": "model-a",
+    "input_tokens": 11,
+    "output_tokens": 2
+  },
+  {
+    "schema_version": 1,
+    "event_id": "e944f6d9-c1a2-5cb0-a047-a48f2f069579",
+    "event_time": "2026-11-22T00:30:00+01:00",
+    "project_id": "project-a",
+    "model_id": "model-a",
+    "input_tokens": -1,
+    "output_tokens": 1
+  },
+  {
+    "schema_version": 1,
+    "event_id": "e944f6d9-c1a2-5cb0-a047-a48f2f069579",
+    "event_time": "2026-11-22T00:30:00+01:00",
+    "project_id": "project-a",
+    "model_id": "model-a",
+    "input_tokens": 5,
+    "output_tokens": 1
+  }
+]
