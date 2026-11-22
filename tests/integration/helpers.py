@@ -155,10 +155,12 @@ def watermarks(demo: Demo) -> tuple[int, int]:
         consumer.close()
 
 
-def topic_id(demo: Demo) -> UUID:
-    description = demo.admin().describe_topics(
-        TopicCollection([demo.topic]), request_timeout=10,
-    )[demo.topic].result(timeout=11)
+def topic_id(demo: Demo, timeout: float = 10) -> UUID:
+    # Keep the client referenced until result() returns, or librdkafka destroys it mid-request.
+    admin = demo.admin()
+    description = admin.describe_topics(
+        TopicCollection([demo.topic]), request_timeout=timeout,
+    )[demo.topic].result(timeout=timeout + 1)
     return UUID(bytes=urlsafe_b64decode(f"{description.topic_id}=="))
 
 
@@ -169,11 +171,12 @@ def saved_topic_id(demo: Demo) -> UUID:
     return row[0]
 
 
-def replace_topic(demo: Demo) -> None:
+def replace_topic(demo: Demo, timeout: float = 15) -> None:
     """Delete the topic and create a new generation with the same name and config."""
-    demo.admin().delete_topics(
-        [demo.topic], operation_timeout=10, request_timeout=15,
-    )[demo.topic].result(timeout=16)
+    admin = demo.admin()
+    admin.delete_topics(
+        [demo.topic], operation_timeout=timeout, request_timeout=timeout,
+    )[demo.topic].result(timeout=timeout + 1)
     deadline = monotonic() + 30
     while True:
         try:
@@ -189,11 +192,12 @@ def replace_topic(demo: Demo) -> None:
             sleep(0.2)
 
 
-def delete_before(demo: Demo, offset: int) -> int:
+def delete_before(demo: Demo, offset: int, timeout: float = 10) -> int:
     partition = TopicPartition(demo.topic, 0, offset)
-    result = demo.admin().delete_records(
-        [partition], request_timeout=10, operation_timeout=10,
-    )[partition].result(timeout=11)
+    admin = demo.admin()
+    result = admin.delete_records(
+        [partition], request_timeout=timeout, operation_timeout=timeout,
+    )[partition].result(timeout=timeout + 1)
     return int(result.low_watermark)
 
 

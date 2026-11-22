@@ -241,7 +241,8 @@ def test_topic_identity_and_offset_guard_detects_replacement_after_fetch(
     child.release("fetched")
     code, _, stderr = child.finish()
     assert code == 3, stderr
-    assert "Source guard" in stderr
+    # The post-fetch guard must name the identity change, not a bounds or lookup failure.
+    assert "Source guard: topic identity changed" in stderr
     assert state(demo) == (0, 0, 0)
 
 
