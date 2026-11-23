@@ -27,6 +27,7 @@ from usage_stream import cli, consumer
 from usage_stream.storage import Delivery, SourceGuardError, Storage
 
 from .conftest import FIXTURES, ROOT, TOPIC_CONFIG, Demo
+from .helpers import checked
 
 
 def call_cli(demo: Demo, monkeypatch: pytest.MonkeyPatch, *args: str) -> int:
@@ -134,6 +135,13 @@ def test_fixture_cli_preserves_delivery_order_across_batches(demo: Demo) -> None
             fixture_deliveries(), strict=True,
         ))
     ]
+
+
+def test_publish_fixture_into_missing_topic_exits_3(demo: Demo) -> None:
+    checked(demo.cli("setup"))
+    result = demo.cli("--topic", "api-usage-missing", "publish-fixture")
+    assert result.returncode == 3
+    assert "Source guard: " in result.stderr
 
 
 def test_reporting_reader_can_query_views_only(demo: Demo) -> None:

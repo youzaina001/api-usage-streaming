@@ -6,6 +6,8 @@ import pytest
 from psycopg.conninfo import conninfo_to_dict
 
 from usage_stream import cli
+from usage_stream.source import PublicationUncertain
+from usage_stream.storage import SourceGuardError
 
 
 @pytest.mark.parametrize(("port", "broker_env", "broker_arg", "expected"), [
@@ -32,8 +34,48 @@ def test_publish_uses_configured_broker(
         return len(list(deliveries))
 
     monkeypatch.setattr(cli, "publish", publish)
+    monkeypatch.setattr(cli, "_require_existing_topic", lambda *args: None)
     assert cli.main() == 0
     assert addresses == [expected]
+
+
+def test_cli_publish_fixture_requires_an_existing_topic(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    published: list[object] = []
+
+    def capture(*args: object) -> int:
+        published.append(args)
+        return 0
+
+    def refuse(*args: object) -> None:
+        raise SourceGuardError("topic or offset unavailable (UNKNOWN_TOPIC_OR_PART)")
+
+    monkeypatch.setattr(cli, "publish", capture)
+    monkeypatch.setattr(cli, "_require_existing_topic", refuse)
+    monkeypatch.setattr(sys, "argv", [
+        "usage-stream", "--broker", "127.0.0.1:1", "publish-fixture",
+    ])
+    assert cli.main() == 3
+    assert "Source guard: " in capsys.readouterr().err
+    assert published == []
+
+
+def test_cli_publish_fixture_uncertain_publication_exits_5(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    def refuse_publication(*args: object) -> int:
+        raise PublicationUncertain(1, 6, "test")
+
+    monkeypatch.setattr(cli, "publish", refuse_publication)
+    monkeypatch.setattr(cli, "_require_existing_topic", lambda *args: None)
+    monkeypatch.setattr(sys, "argv", [
+        "usage-stream", "--broker", "127.0.0.1:1", "publish-fixture",
+    ])
+    assert cli.main() == 5
+    error = capsys.readouterr().err
+    assert "Publication uncertain: 1 of 6 deliveries confirmed" in error
+    assert "rerun the whole fixture" in error
 
 
 @pytest.mark.parametrize(("port", "expected"), [

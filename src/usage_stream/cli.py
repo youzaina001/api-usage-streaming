@@ -70,7 +70,12 @@ def main() -> int:
 
     try:
         if args.command == "publish-fixture":
-            acknowledged = publish(args.broker, args.topic, fixture_deliveries())
+            _require_existing_topic(args.broker, args.topic, args.pipeline)
+            try:
+                acknowledged = publish(args.broker, args.topic, fixture_deliveries())
+            except PublicationUncertain as exc:
+                print(f"Publication uncertain: {exc}; rerun the whole fixture", file=sys.stderr)
+                return 5
             print(f"Acknowledged {acknowledged} deliveries")
             return 0
         if args.command == "backfill":
