@@ -7,8 +7,15 @@ environment: the same mechanism CI relies on, not an import of the gate.
 
 pytest ignores collect_ignore for files named on the command line, so the pin
 also collects the module and a single test by name, the way an IDE runner
-would, and asserts the same outcome: pytest must apply its own guard and
-report nothing to run.
+would. The expected outcomes, asserted by exit code and collected ids:
+
+- with the gate unset or 0, collecting tests/perf exits 5 (no tests
+  collected by the conftest gate);
+- with the gate unset or 0, collecting the named module exits 5 as well (the
+  module-level skip reports no tests to collect);
+- with the gate unset or 0, collecting a single test id exits 4, because
+  pytest finds no collector once the module is skipped;
+- with the gate open, all three paths collect successfully.
 """
 import os
 import subprocess
@@ -16,28 +23,21 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+REPORT_TEST = "tests/perf/test_perf_measurements.py::test_results_report"
 
 
-def collect_perf(value: str | None) -> subprocess.CompletedProcess[str]:
-    """Collect tests/perf in a fresh pytest with USAGE_TEST_PERF set to `value`."""
+def pytest_env(value: str | None) -> dict[str, str]:
     env = {name: setting for name, setting in os.environ.items() if name != "USAGE_TEST_PERF"}
     if value is not None:
         env["USAGE_TEST_PERF"] = value
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "tests/perf", "--collect-only"],
-        cwd=ROOT, env=env, check=False, capture_output=True, text=True, timeout=120,
-    )
+    return env
 
 
-def collect_direct(value: str | None, node_id: str = "") -> subprocess.CompletedProcess[str]:
-    """Collect a perf module or single test by name, the way an IDE runner would."""
-    env = {name: setting for name, setting in os.environ.items() if name != "USAGE_TEST_PERF"}
-    if value is not None:
-        env["USAGE_TEST_PERF"] = value
-    target = f"tests/perf/test_perf_measurements.py{node_id}"
+def collect_target(target: str, value: str | None) -> subprocess.CompletedProcess[str]:
+    """Collect `target` in a fresh pytest with USAGE_TEST_PERF set to `value`."""
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-q", target, "--collect-only"],
-        cwd=ROOT, env=env, check=False, capture_output=True, text=True, timeout=120,
+        cwd=ROOT, env=pytest_env(value), check=False, capture_output=True, text=True, timeout=120,
     )
 
 
@@ -47,19 +47,25 @@ def collected(result: subprocess.CompletedProcess[str]) -> list[str]:
 
 def test_perf_tests_do_not_collect_without_the_gate() -> None:
     for value in (None, "0"):
-        result = collect_perf(value)
-        assert result.returncode == 5, (value, result.returncode, result.stdout, result.stderr)
-        assert collected(result) == [], (value, result.stdout)
-        named = collect_direct(value)
-        assert not collected(named), (named.returncode, named.stdout, named.stderr)
-        single = collect_direct(value, "::test_results_report")
-        assert not collected(single), (single.returncode, single.stdout, single.stderr)
+        directory = collect_target("tests/perf", value)
+        assert directory.returncode == 5, (value, directory.returncode, directory.stderr)
+        assert collected(directory) == [], (value, directory.stdout)
+        named = collect_target("tests/perf/test_perf_measurements.py", value)
+        assert named.returncode == 5, (value, named.returncode, named.stderr)
+        assert collected(named) == [], (value, named.stdout)
+        single = collect_target(REPORT_TEST, value)
+        assert single.returncode == 4, (value, single.returncode, single.stderr)
+        assert collected(single) == [], (value, single.stdout)
 
 
 def test_perf_tests_collect_with_the_gate_open() -> None:
-    result = collect_perf("1")
-    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
-    assert collected(result), (result.stdout, result.stderr)
-    named = collect_direct("1")
-    assert named.returncode == 0, (named.returncode, named.stdout, named.stderr)
-    assert collected(named), (named.stdout, named.stderr)
+    for target, expected_ids in (
+        ("tests/perf", "directory"),
+        ("tests/perf/test_perf_measurements.py", "named module"),
+        (REPORT_TEST, "single test id"),
+    ):
+        result = collect_target(target, "1")
+        assert result.returncode == 0, (expected_ids, result.returncode, result.stderr)
+        ids = collected(result)
+        assert any(id.endswith("::test_results_report") for id in ids), (expected_ids, ids)
+    assert len(collected(collect_target(REPORT_TEST, "1"))) == 1

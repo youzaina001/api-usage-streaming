@@ -207,7 +207,7 @@ Without `USAGE_TEST_PERF=1` the suite never runs: default runs do not collect it
 | Scenario | Events or rows | Median seconds | Range seconds | Throughput |
 | --- | ---: | ---: | ---: | ---: |
 | Consume to the high watermark, batch 1,000 | 1,000 | 0.93 | 0.81 to 1.06 | 1,079 events/s |
-| Consume to the high watermark, batch 1,000 | 10,000 | 4.95 | 4.86 to 5.05 | 2,022 events/s |
+| Consume to the high watermark, batch 1,000 | 10,000 | 4.94 | 4.86 to 5.05 | 2,022 events/s |
 | Consume to the high watermark, batch 1,000 | 50,000 | 24.95 | 24.91 to 25.49 | 2,004 events/s |
 | Backfill (validate and publish all archives) | 10,000 | 0.70 | 0.68 to 0.74 | 14,251 rows/s |
 | Backfill (validate and publish all archives) | 100,000 | 2.01 | 1.98 to 2.09 | 49,680 rows/s |

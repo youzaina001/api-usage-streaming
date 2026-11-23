@@ -1,8 +1,10 @@
 """Scenario and measurement definitions for the opt-in performance suite.
 
 The suite is documentation, not a gate: nothing in this module can fail a
-default run, because the collection gate in this directory's conftest.py
-keeps the test module out of every run without USAGE_TEST_PERF=1. The
+default run. Two gate layers keep the test module out of every run without
+USAGE_TEST_PERF=1: the collection-time collect_ignore in this directory's
+conftest.py for directory runs, and the module-level skip in the test module
+itself for files or test ids named directly on the command line. The
 constants below are the recorded methodology (run count, warmup size, and
 the measured sizes and batch size); ADR 0002 explains them.
 """

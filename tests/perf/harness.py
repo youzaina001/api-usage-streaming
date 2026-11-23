@@ -5,8 +5,10 @@ wall-clock timing around CLI subprocesses plus the results recorder. Timings
 exist only to be recorded for the reports under docs/; every check here is
 structural: exit codes, exact command outputs, row and fact counts, and
 ordering. No duration threshold is ever asserted, so no run can flake on a
-timing and nothing here gates CI (the collection gate in conftest.py keeps
-the test module out of every default run).
+timing and nothing here gates CI: the conftest collect_ignore gate for
+directory runs plus the module-level skip in the test module keep the suite
+out of every run without USAGE_TEST_PERF=1 (tests/test_perf_gate.py pins both
+layers from the never-gated unit suite).
 """
 import json
 import os
