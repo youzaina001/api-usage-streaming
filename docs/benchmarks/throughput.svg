@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 420" width="680" height="420" role="img" aria-labelledby="chart-title chart-desc" font-family="sans-serif">
+  <title id="chart-title">Throughput by scenario and size: consume 1,000 events 1,079 per second; consume 10,000 2,022 per second; consume 50,000 2,004 per second; backfill 10,000 rows 14,251 per second; backfill 100,000 rows 49,680 per second; recovery clean run 1,453 per second; recovery after a kill 1,154 events per second.</title>
+  <desc id="chart-desc">Bar chart of median events per second for the measured scenarios on the local Docker Compose stack, recorded 2026-11-23. Each bar shows the median of three suite runs, each suite run itself the median of three runs on a fresh topic and initialized database. Consume and recovery runs use a batch size of 1,000; backfill timings cover validation and publication of all archive rows in file order. Backfill publishing is close to 25 times faster than the guarded consume path, which commits one database transaction and performs two broker guard lookups per batch. The numbers are documentation, not gates, and depend on the machine. Methodology and result tables are in the README Performance section and ADR 0002.</desc>
+  <rect x="0" y="0" width="680" height="420" fill="#ffffff"/>
+  <text x="24" y="26" font-size="16" font-weight="bold" fill="#1f2937">Throughput by scenario and size</text>
+  <text x="24" y="44" font-size="12" fill="#4b5563">events per second on the local Compose stack, medians of three suite runs (2026-11-23); higher is better</text>
+  <g stroke="#d1d5db" stroke-width="1">
+    <line x1="70" y1="274" x2="660" y2="274" stroke-dasharray="4 4"/>
+    <line x1="70" y1="218" x2="660" y2="218" stroke-dasharray="4 4"/>
+    <line x1="70" y1="162" x2="660" y2="162" stroke-dasharray="4 4"/>
+    <line x1="70" y1="106" x2="660" y2="106" stroke-dasharray="4 4"/>
+    <line x1="70" y1="50" x2="660" y2="50" stroke-dasharray="4 4"/>
+  </g>
+  <g font-size="11" fill="#4b5563" text-anchor="end">
+    <text x="62" y="334">0</text>
+    <text x="62" y="278">10,000</text>
+    <text x="62" y="222">20,000</text>
+    <text x="62" y="166">30,000</text>
+    <text x="62" y="110">40,000</text>
+    <text x="62" y="54">50,000</text>
+  </g>
+  <line x1="70" y1="330" x2="660" y2="330" stroke="#6b7280" stroke-width="1.5"/>
+  <line x1="70" y1="30" x2="70" y2="330" stroke="#6b7280" stroke-width="1.5"/>
+  <text x="20" y="190" font-size="12" fill="#374151" text-anchor="middle" transform="rotate(-90 20 190)">events per second</text>
+  <g>
+    <rect x="85" y="324.0" width="56" height="6.0" fill="#33629c" stroke="#1f3c60"/>
+    <rect x="169" y="318.7" width="56" height="11.3" fill="#33629c" stroke="#1f3c60"/>
+    <rect x="253" y="318.8" width="56" height="11.2" fill="#33629c" stroke="#1f3c60"/>
+    <rect x="337" y="250.2" width="56" height="79.8" fill="#4c8a4c" stroke="#2f5c2f"/>
+    <rect x="421" y="51.8" width="56" height="278.2" fill="#4c8a4c" stroke="#2f5c2f"/>
+    <rect x="505" y="321.9" width="56" height="8.1" fill="#a3762f" stroke="#775121"/>
+    <rect x="589" y="323.5" width="56" height="6.5" fill="#a3762f" stroke="#775121"/>
+  </g>
+  <g font-size="12" fill="#1f2937" text-anchor="middle">
+    <text x="113" y="318">1,079</text>
+    <text x="197" y="312.7">2,022</text>
+    <text x="281" y="312.8">2,004</text>
+    <text x="365" y="244.2">14,251</text>
+    <text x="449" y="45.8">49,680</text>
+    <text x="533" y="315.9">1,453</text>
+    <text x="617" y="317.5">1,154</text>
+  </g>
+  <g font-size="12" fill="#374151" text-anchor="middle">
+    <text x="113" y="348">1,000</text>
+    <text x="197" y="348">10,000</text>
+    <text x="281" y="348">50,000</text>
+    <text x="365" y="348">10,000</text>
+    <text x="449" y="348">100,000</text>
+    <text x="533" y="348">clean</text>
+    <text x="617" y="348">resume</text>
+  </g>
+  <g font-size="13" font-weight="bold" fill="#1f2937" text-anchor="middle">
+    <text x="197" y="370">Consume</text>
+    <text x="407" y="370">Backfill</text>
+    <text x="575" y="370">Recovery (2,000 events)</text>
+  </g>
+  <text x="365" y="392" font-size="11" fill="#4b5563" text-anchor="middle">rows per bar: events consumed, archive rows published, or events in the recovery fixture</text>
+  <text x="365" y="410" font-size="11" fill="#4b5563" text-anchor="middle">consume and recovery use batch size 1,000; backfill publishes each archive in file order</text>
+</svg>

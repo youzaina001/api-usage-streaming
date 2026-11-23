@@ -187,8 +187,35 @@ Enable the integration suite against a disposable Compose project running these 
 USAGE_TEST_INTEGRATION=1 uv run --locked pytest -q
 ```
 
-Each integration case uses a new topic and initialized database. The suite includes a transaction marker that the real consumer must skip, read-only reporting checks, and an independent reference for the seeded fixture. Recovery tests run the consumer in a child process that pauses at private points around the database commit, then kill it, race a second worker against it, or replace and truncate the topic while it waits. Backfill tests cover archive limits, in-file conflict rejection, a missing topic, retry after partial publication, and a rebuild into a fresh topic and database. Performance measurements are the next project unit.
+Each integration case uses a new topic and initialized database. The suite includes a transaction marker that the real consumer must skip, read-only reporting checks, and an independent reference for the seeded fixture. Recovery tests run the consumer in a child process that pauses at private points around the database commit, then kill it, race a second worker against it, or replace and truncate the topic while it waits. Backfill tests cover archive limits, in-file conflict rejection, a missing topic, retry after partial publication, and a rebuild into a fresh topic and database. The opt-in performance suite reuses the same stack; see [Performance](#performance).
 
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on pull requests and pushes to `main`. One job runs Ruff, mypy and the unit tests. A second job starts `compose.yaml` on the default ports, runs the integration suite with `USAGE_TEST_INTEGRATION=1`, prints the Compose logs on failure, and removes the stack. Both jobs use `uv sync --locked` on Python 3.12. Actions are pinned to commit SHAs.
+
+## Performance
+
+Throughput is measured, not asserted. The numbers below are documentation from one machine: they never gate CI, no timing threshold exists anywhere in the tests, and another machine will measure different values. The measurements come from the opt-in perf suite, which drives the same Compose stack and fixtures as the integration suite:
+
+```bash
+docker compose --env-file /dev/null -p api-usage-it up -d --wait
+USAGE_TEST_PERF=1 uv run --locked pytest -q tests/perf
+```
+
+Without `USAGE_TEST_PERF=1` the module is not even collected, and a unit test pins that. The suite asserts structure only (exact outputs, exit codes, row and fact counts, ordering, positive durations), records every timing to a JSON report printed by the run, and finishes in about two minutes. The method is recorded in detail in [ADR 0002](docs/decisions/0002-performance-measurements.md); in short: every measured run gets a fresh topic and initialized database, a 1,000-event warmup per session is discarded, every scenario runs three times per session, and the table is the median of three suite executions (2026-11-23) with the range across all nine runs.
+
+| Scenario | Events or rows | Median seconds | Range seconds | Throughput |
+| --- | ---: | ---: | ---: | ---: |
+| Consume to the high watermark, batch 1,000 | 1,000 | 0.93 | 0.81 to 1.06 | 1,079 events/s |
+| Consume to the high watermark, batch 1,000 | 10,000 | 4.95 | 4.86 to 5.05 | 2,022 events/s |
+| Consume to the high watermark, batch 1,000 | 50,000 | 24.95 | 24.91 to 25.49 | 2,004 events/s |
+| Backfill (validate and publish all archives) | 10,000 | 0.70 | 0.68 to 0.74 | 14,251 rows/s |
+| Backfill (validate and publish all archives) | 100,000 | 2.01 | 1.98 to 2.09 | 49,680 rows/s |
+| Recovery clean run, 2,000 events | 2,000 | 1.38 | 1.31 to 1.62 | 1,453 events/s |
+| Recovery after a kill at the first commit | 2,000 | 1.73 | 1.69 to 1.89 | 1,154 events/s |
+
+The kill in the last row happens right after the first batch commits; the resumed process re-verifies and finishes the remaining 1,000 events, which adds about 0.36 seconds against the clean median. Two properties dominate these numbers: every consumed batch commits one transaction and performs two broker guard lookups first, so consuming is batch-latency bound (the rate is flat between 10,000 and 50,000 events, and the default batch of 100 would cut the rate by an order of magnitude), while publishing, which needs none of that, moves tens of thousands of rows per second.
+
+![Throughput by scenario and size](docs/benchmarks/throughput.svg)
+
+The chart, the table, and [ADR 0002](docs/decisions/0002-performance-measurements.md) were recorded by hand from the suite's JSON reports; rerun the suite to measure again, and amend them together so the published numbers keep one source.
