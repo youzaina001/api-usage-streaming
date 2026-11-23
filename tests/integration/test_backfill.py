@@ -27,7 +27,6 @@ from .conftest import Demo, fresh_demo
 from .helpers import (
     REFERENCE_DAYS,
     checked,
-    outcomes,
     read_records,
     snapshot,
     state,
@@ -152,14 +151,23 @@ def test_backfill_publishes_only_validated_bytes(
     assert watermarks(demo) == (0, 2)
 
 
-def test_in_file_conflict_uses_first_valid_row(demo: Demo, tmp_path: Path) -> None:
+def test_in_file_conflict_is_rejected_before_publication(demo: Demo, tmp_path: Path) -> None:
     checked(demo.cli("setup"))
     data = row(D) + b"\n" + row(D | {"input_tokens": 8}) + b"\n" + row(D) + b"\n"
     archive, manifest_path = write_archive(tmp_path, data, manifest(data, 3))
-    assert checked(backfill(demo, archive, manifest_path)) == "Acknowledged 3 deliveries"
-    assert checked(demo.cli("consume", "--until-high-watermark")) == "Next offset 3"
-    assert outcomes(demo) == [(0, "accepted"), (1, "conflict"), (2, "duplicate")]
-    assert snapshot(demo) == ([("2026-11-21", "project-a", "model-a", 1, 7, 3)], (3, 1, 1, 1, 0))
+    result = backfill(demo, archive, manifest_path)
+    assert result.returncode == 2
+    assert f"Archive rejected: row 2 conflicts with row 1 for event id {EVENT_D}" in result.stderr
+    assert watermarks(demo) == (0, 0)
+
+
+def test_backfill_into_missing_topic_exits_3(demo: Demo) -> None:
+    checked(demo.cli("setup"))
+    result = demo.cli(
+        "--topic", "api-usage-missing", "backfill", "--file", str(ARCHIVE), "--manifest", str(MANIFEST),
+    )
+    assert result.returncode == 3
+    assert "Source guard: " in result.stderr
 
 
 class FaultyProducer(Producer):

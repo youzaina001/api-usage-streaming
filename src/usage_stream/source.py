@@ -12,7 +12,7 @@ from typing import NoReturn, cast
 
 from confluent_kafka import KafkaError, KafkaException, Message, Producer
 
-from .events import MAX_PAYLOAD_BYTES, InvalidEvent, decode_event
+from .events import MAX_PAYLOAD_BYTES, InvalidEvent, UsageEvent, decode_event
 
 TOPIC_CONFIG = {
     "cleanup.policy": "delete",
@@ -103,9 +103,10 @@ def read_manifest(path: Path) -> Manifest:
 def _row_key(line: bytes) -> bytes | None:
     try:
         event_id = json.loads(line).get("event_id")
+        # UnicodeEncodeError is a ValueError, so lone surrogates land in the handler.
+        return event_id.encode("utf-8") if isinstance(event_id, str) else None
     except (ValueError, AttributeError, RecursionError):
         return None
-    return event_id.encode("utf-8") if isinstance(event_id, str) else None
 
 
 def read_archive(file: Path, manifest_file: Path) -> list[tuple[bytes, bytes]]:
@@ -133,6 +134,7 @@ def read_archive(file: Path, manifest_file: Path) -> list[tuple[bytes, bytes]]:
     if len(lines) != manifest.row_count:
         raise ArchiveError(f"row count {len(lines)} does not match the manifest")
     deliveries = []
+    first_seen: dict[bytes, tuple[int, UsageEvent]] = {}
     for number, line in enumerate(lines, 1):
         if len(line) > MAX_PAYLOAD_BYTES:
             raise ArchiveError(f"row {number} is larger than 16,384 bytes")
@@ -144,6 +146,19 @@ def read_archive(file: Path, manifest_file: Path) -> list[tuple[bytes, bytes]]:
         if event.event_time.date() != manifest.day:
             raise ArchiveError(f"row {number} is outside {manifest.day.isoformat()}")
         assert key is not None
+        previous = first_seen.get(key)
+        if previous is not None:
+            first_number, first_event = previous
+            # Repeats with an equal fact stay allowed (they reconcile as duplicates), but a
+            # conflicting repeat would let a partial publication plus whole-file retry change
+            # which record wins, so it is rejected before anything is published.
+            if event != first_event:
+                raise ArchiveError(
+                    f"row {number} conflicts with row {first_number} for event id "
+                    f"{key.decode('ascii')}"
+                )
+        else:
+            first_seen[key] = (number, event)
         deliveries.append((key, line))
     return deliveries
 

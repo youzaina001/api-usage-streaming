@@ -26,6 +26,15 @@ def _demo_dsn(role: str, password: str) -> str:
     )
 
 
+def _require_existing_topic(broker: str, topic: str, pipeline: str) -> None:
+    """Refuse to publish into a missing or incompatible topic (exit 3 via SourceGuardError)."""
+    partition = KafkaPartition(broker, topic, pipeline)
+    try:
+        partition.provision(create=False)
+    finally:
+        partition.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="usage-stream")
     kafka_port = os.environ.get("USAGE_KAFKA_PORT") or "19092"
@@ -70,7 +79,12 @@ def main() -> int:
             except (ArchiveError, OSError) as exc:
                 print(f"Archive rejected: {exc}", file=sys.stderr)
                 return 2
-            acknowledged = publish(args.broker, args.topic, deliveries)
+            _require_existing_topic(args.broker, args.topic, args.pipeline)
+            try:
+                acknowledged = publish(args.broker, args.topic, deliveries)
+            except PublicationUncertain as exc:
+                print(f"Publication uncertain: {exc}; rerun the whole file", file=sys.stderr)
+                return 5
             print(f"Acknowledged {acknowledged} deliveries")
             return 0
 
@@ -99,7 +113,7 @@ def main() -> int:
         print(f"Stale checkpoint: {exc}", file=sys.stderr)
         return 4
     except PublicationUncertain as exc:
-        print(f"Publication uncertain: {exc}; rerun the whole file", file=sys.stderr)
+        print(f"Publication uncertain: {exc}", file=sys.stderr)
         return 5
     except KafkaException as exc:
         print(f"Kafka operation failed: {exc}", file=sys.stderr)

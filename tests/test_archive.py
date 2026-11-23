@@ -22,6 +22,7 @@ from tests.archive_builder import (
 )
 from usage_stream import cli, source
 from usage_stream.source import ArchiveError, PublicationUncertain, read_archive
+from usage_stream.storage import SourceGuardError
 
 C = event(EVENT_C, "2026-11-22T00:30:00+01:00", 5, 1)
 D = event(EVENT_D, "2026-11-21T18:00:00Z", 7, 3)
@@ -40,12 +41,19 @@ def test_terminal_lf_is_optional(tmp_path: Path) -> None:
     assert len(read_archive(*write_archive(tmp_path, data, manifest(data, 2)))) == 2
 
 
-def test_in_file_conflicts_are_kept_in_order_for_the_consumer(tmp_path: Path) -> None:
+def test_in_file_conflicts_are_rejected(tmp_path: Path) -> None:
     changed = row(D | {"input_tokens": 8})
-    data = row(D) + b"\n" + changed + b"\n"
+    data = row(D) + b"\n" + changed + b"\n" + row(D) + b"\n"
+    with pytest.raises(ArchiveError, match=f"row 2 conflicts with row 1 for event id {EVENT_D}"):
+        read_archive(*write_archive(tmp_path, data, manifest(data, 3)))
+
+
+def test_in_file_repeats_with_equal_facts_are_kept_in_order(tmp_path: Path) -> None:
+    respelled = row(event(EVENT_D, "2026-11-21T19:00:00+01:00", 7, 3))
+    data = row(D) + b"\n" + respelled + b"\n" + row(D) + b"\n"
     assert [payload for _, payload in read_archive(
-        *write_archive(tmp_path, data, manifest(data, 2)),
-    )] == [row(D), changed]
+        *write_archive(tmp_path, data, manifest(data, 3)),
+    )] == [row(D), respelled, row(D)]
 
 
 @pytest.mark.parametrize(("data", "fields", "reason"), [
@@ -66,6 +74,10 @@ def test_in_file_conflicts_are_kept_in_order_for_the_consumer(tmp_path: Path) ->
     pytest.param(row(C) + b"\n" + row(D, 16_385) + b"\n", None, "larger than 16,384", id="oversized-line"),
     pytest.param(row(C) + b"\r\n" + row(D) + b"\r\n", None, "LF", id="crlf"),
     pytest.param(row(C) + b"\n" + b"\xff" + row(D), None, "row 2 is invalid", id="invalid-utf8"),
+    pytest.param(
+        row(C) + b"\n" + row(C | {"event_id": "\ud800"}) + b"\n",
+        None, "row 2 is invalid", id="lone-surrogate-event-id",
+    ),
 ])
 def test_invalid_archives_are_rejected(
     tmp_path: Path, data: bytes, fields: dict[str, object] | None, reason: str,
@@ -129,11 +141,36 @@ def test_row_limit_is_exactly_50000(tmp_path: Path) -> None:
 def run_backfill(
     monkeypatch: pytest.MonkeyPatch, archive: Path, manifest_path: Path,
 ) -> int:
+    monkeypatch.setattr(cli, "_require_existing_topic", lambda *args: None)
     monkeypatch.setattr(sys, "argv", [
         "usage-stream", "--broker", "127.0.0.1:1", "--topic", "unused",
         "backfill", "--file", str(archive), "--manifest", str(manifest_path),
     ])
     return cli.main()
+
+
+def test_cli_backfill_requires_an_existing_topic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    published: list[object] = []
+
+    def capture(*args: object) -> int:
+        published.append(args)
+        return 0
+
+    def refuse(*args: object) -> None:
+        raise SourceGuardError("topic or offset unavailable (UNKNOWN_TOPIC_OR_PART)")
+
+    monkeypatch.setattr(cli, "publish", capture)
+    monkeypatch.setattr(cli, "_require_existing_topic", refuse)
+    archive, manifest_path = write_archive(tmp_path, VALID, manifest(VALID, 2))
+    monkeypatch.setattr(sys, "argv", [
+        "usage-stream", "--broker", "127.0.0.1:1", "--topic", "unused",
+        "backfill", "--file", str(archive), "--manifest", str(manifest_path),
+    ])
+    assert cli.main() == 3
+    assert "Source guard: " in capsys.readouterr().err
+    assert published == []
 
 
 def test_cli_rejects_invalid_archive_before_publication(
