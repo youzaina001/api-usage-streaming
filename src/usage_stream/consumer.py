@@ -1,5 +1,6 @@
 from base64 import urlsafe_b64decode
-from time import monotonic
+from collections.abc import Callable
+from time import monotonic, sleep
 from typing import cast
 from uuid import UUID
 
@@ -12,6 +13,7 @@ from confluent_kafka import (
 )
 from confluent_kafka.admin import (  # type: ignore[attr-defined]
     AdminClient,
+    ConfigEntry,
     ConfigResource,
     NewTopic,
     ResourceType,
@@ -24,10 +26,16 @@ from .storage import Checkpoint, Delivery, SourceGuardError, Storage
 
 RPC_TIMEOUT = 5.0
 POLL_WINDOW = 0.25
+PROPAGATION_TIMEOUT = 5.0
+PROPAGATION_PAUSE = 0.1
 SOURCE_ERRORS = {
     KafkaError.UNKNOWN_TOPIC_OR_PART, KafkaError.UNKNOWN_TOPIC_ID, KafkaError._UNKNOWN_TOPIC,
     KafkaError._UNKNOWN_PARTITION,
     KafkaError._AUTO_OFFSET_RESET, KafkaError.OFFSET_OUT_OF_RANGE,
+}
+PROPAGATION_ERRORS = {
+    KafkaError.UNKNOWN_TOPIC_OR_PART, KafkaError.UNKNOWN_TOPIC_ID,
+    KafkaError._UNKNOWN_TOPIC, KafkaError._UNKNOWN_PARTITION,
 }
 
 
@@ -35,9 +43,31 @@ class IngestionTimeout(RuntimeError):
     pass
 
 
+class TopicUnavailable(SourceGuardError):
+    """The broker has not propagated the topic yet, so retrying briefly is safe."""
+
+
 def _check_broker_error(error: object) -> None:
     if isinstance(error, KafkaError) and error.code() in SOURCE_ERRORS:
+        if error.code() in PROPAGATION_ERRORS:
+            raise TopicUnavailable(f"topic or offset unavailable ({error.name()})")
         raise SourceGuardError(f"topic or offset unavailable ({error.name()})")
+
+
+def _retry_propagation[T](operation: Callable[[], T], timeout: float | None = None) -> T:
+    """Absorb the broker metadata lag right after a topic is created.
+
+    A topic that stays missing keeps raising TopicUnavailable until the deadline,
+    so the guard still fails closed with exit 3; only the propagation race is absorbed.
+    """
+    deadline = monotonic() + (PROPAGATION_TIMEOUT if timeout is None else timeout)
+    while True:
+        try:
+            return operation()
+        except TopicUnavailable:
+            if monotonic() >= deadline:
+                raise
+            sleep(PROPAGATION_PAUSE)
 
 
 class KafkaPartition:
@@ -60,6 +90,9 @@ class KafkaPartition:
         self.consumer.close()
 
     def _topic_id(self) -> UUID:
+        return _retry_propagation(self._describe_topic_id)
+
+    def _describe_topic_id(self) -> UUID:
         try:
             future = self.admin.describe_topics(
                 TopicCollection([self.topic]), request_timeout=RPC_TIMEOUT,
@@ -73,6 +106,25 @@ class KafkaPartition:
             raise SourceGuardError("topic must have an identity and exactly partition 0")
         return topic_id
 
+    def _configs(self, resource: ConfigResource) -> dict[str, ConfigEntry]:
+        try:
+            entries = self.admin.describe_configs(
+                [resource], request_timeout=RPC_TIMEOUT,
+            )[resource].result(timeout=RPC_TIMEOUT + 1)
+        except KafkaException as exc:
+            _check_broker_error(exc.args[0])
+            raise
+        return cast("dict[str, ConfigEntry]", entries)
+
+    def _watermarks(self) -> tuple[int, int]:
+        try:
+            return self.consumer.get_watermark_offsets(
+                self.partition, timeout=RPC_TIMEOUT, cached=False,
+            )
+        except KafkaException as exc:
+            _check_broker_error(exc.args[0])
+            raise
+
     def provision(self, *, create: bool) -> UUID:
         if create:
             try:
@@ -85,25 +137,13 @@ class KafkaPartition:
                     raise
         topic_id = self._topic_id()
         resource = ConfigResource(ResourceType.TOPIC, self.topic)
-        try:
-            entries = self.admin.describe_configs(
-                [resource], request_timeout=RPC_TIMEOUT,
-            )[resource].result(timeout=RPC_TIMEOUT + 1)
-        except KafkaException as exc:
-            _check_broker_error(exc.args[0])
-            raise
+        entries = _retry_propagation(lambda: self._configs(resource))
         if any(entries[key].value != value for key, value in TOPIC_CONFIG.items()):
             raise SourceGuardError("topic retention or timestamp configuration is incompatible")
         return topic_id
 
     def check(self, topic_id: UUID, cursor: int, last_offset: int | None = None) -> int:
-        try:
-            low, high = self.consumer.get_watermark_offsets(
-                self.partition, timeout=RPC_TIMEOUT, cached=False,
-            )
-        except KafkaException as exc:
-            _check_broker_error(exc.args[0])
-            raise
+        low, high = _retry_propagation(self._watermarks)
         # On the standalone broker, describe after fetch and bounds before labeling the batch.
         if self._topic_id() != topic_id:
             raise SourceGuardError("topic identity changed")

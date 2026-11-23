@@ -106,6 +106,8 @@ Follows the topic, or with `--until-high-watermark` processes up to the offset c
 | 6 | Consume deadline reached (`--timeout-seconds`, bounded or follow mode); committed batches and the checkpoint are kept, so a retry resumes | `consume` |
 | 130 | Interrupted with Ctrl+C; an interrupted publisher may already have sent part of its rows | all commands |
 
+A topic created milliseconds earlier may not be visible to the broker yet, so each source-check broker lookup retries for up to five seconds before exiting 3; a topic that stays missing still fails closed.
+
 ## Source and recovery
 
 - Setup binds the PostgreSQL checkpoint to the Kafka topic ID and partition. Consume starts at the saved offset with Kafka offset commits disabled. If the binding or broker bounds change, the command stops and reports the failure.
