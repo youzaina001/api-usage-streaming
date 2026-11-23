@@ -4,23 +4,36 @@ The suite is documentation, not a gate: it drives the same Compose stack as
 the integration suite and records wall times for the reports under docs/.
 Every assertion here is structural (fixture counts, size ordering, positive
 durations, a throughput column); timing thresholds never appear, so this
-module cannot flake or gate CI, and the collection gate in conftest.py
-keeps it out of every default run anyway.
+module cannot flake or gate CI.
+
+pytest ignores the conftest collect_ignore gate for files named on the
+command line, so this module carries its own guard: without the variable it
+skips at import, which also covers IDE runners that pass a single file or
+test id. With the gate open, both paths collect the same tests.
 
 Run it with the stack up:
 
     docker compose --env-file /dev/null -p api-usage-it up -d --wait
-    USAGE_TEST_PERF=1 uv run --locked pytest -q tests/perf -s
+    USAGE_TEST_PERF=1 uv run --locked pytest -q -s tests/perf
 
 Each measured run gets a fresh topic and initialized database (the
 integration fresh_demo() helper), after one per-session warmup whose
 timings are discarded. Run everything in tests/perf together: the final
 report test reads what the earlier tests recorded.
 """
+import os
+
 import pytest
 
-from .harness import PerfSuite
-from .scenarios import (
+if os.environ.get("USAGE_TEST_PERF") != "1":
+    pytest.skip(
+        "Set USAGE_TEST_PERF=1 against the shared Compose stack "
+        "(opt-in, roughly two minutes) to collect the perf suite.",
+        allow_module_level=True,
+    )
+
+from .harness import PerfSuite  # noqa: E402
+from .scenarios import (  # noqa: E402
     BACKFILL_SIZES,
     CONSUME_SIZES,
     RECOVERY_CLEAN,
