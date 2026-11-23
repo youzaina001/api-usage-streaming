@@ -4,10 +4,9 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import pytest
-from confluent_kafka import KafkaError, Message, Producer
+from confluent_kafka import Producer
 
 from tests.archive_builder import (
     ARCHIVE,
@@ -26,6 +25,7 @@ from usage_stream import cli, source
 from .conftest import Demo, fresh_demo
 from .helpers import (
     REFERENCE_DAYS,
+    FaultyProducer,
     checked,
     read_records,
     snapshot,
@@ -168,36 +168,6 @@ def test_backfill_into_missing_topic_exits_3(demo: Demo) -> None:
     )
     assert result.returncode == 3
     assert "Source guard: " in result.stderr
-
-
-class FaultyProducer(Producer):
-    """Real producer with one injected fault on the second requested row."""
-
-    mode = ""
-
-    def __init__(self, config: dict[str, Any]) -> None:
-        super().__init__(config)
-        self.requested = 0
-        self.failed: list[Callable[[KafkaError | None, Message | None], None]] = []
-        self.hidden = 0
-
-    def produce(self, *args: Any, **kwargs: Any) -> None:
-        self.requested += 1
-        if self.requested == 2 and self.mode == "failed-delivery":
-            # Injected: this row never reaches the broker and fails at flush.
-            self.failed.append(kwargs["on_delivery"])
-            return
-        if self.requested == 2 and self.mode == "lost-acknowledgement":
-            # Injected: the broker receives this row but its acknowledgement is withheld.
-            kwargs.pop("on_delivery")
-            self.hidden += 1
-        super().produce(*args, **kwargs)
-
-    def flush(self, *args: Any) -> int:
-        pending = int(super().flush(*args))
-        for callback in self.failed:
-            callback(KafkaError(KafkaError._MSG_TIMED_OUT), None)
-        return pending + self.hidden
 
 
 @pytest.mark.parametrize(("mode", "broker_high", "retry_keys"), [

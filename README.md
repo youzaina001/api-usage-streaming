@@ -34,7 +34,7 @@ SQL
 | 2026-11-21 | 1 | 5 | 1 |
 | 2026-11-22 | 2 | 30 | 6 |
 
-The first run has six deliveries: three accepted, one duplicate, one conflict, and one invalid. Running consume again reaches the same offset and leaves the views unchanged. Running the publisher again appends six deliveries and preserves the usage totals. Before publishing, `publish-fixture` checks that the topic exists with the expected configuration and exits 3 otherwise. If publication is uncertain it exits 5 and reports the confirmed lower bound; rerun the whole fixture.
+The first run has six deliveries: three accepted, one duplicate, one conflict, and one invalid. Running consume again reaches the same offset and leaves the views unchanged. Running the publisher again appends six deliveries and preserves the usage totals. Before publishing, `publish-fixture` checks that the topic exists with the expected configuration and exits 3 otherwise. If publication is uncertain, it exits 5 and reports the confirmed lower bound; rerun the whole fixture, or rebuild into a new topic and database if a conflicting row may have been published, because the first valid delivery for an event ID wins and a rerun cannot replace it.
 
 Stop the demo after checking the results:
 

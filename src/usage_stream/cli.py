@@ -74,7 +74,11 @@ def main() -> int:
             try:
                 acknowledged = publish(args.broker, args.topic, fixture_deliveries())
             except PublicationUncertain as exc:
-                print(f"Publication uncertain: {exc}; rerun the whole fixture", file=sys.stderr)
+                print(
+                    f"Publication uncertain: {exc}; rerun the whole fixture, or rebuild into a "
+                    "new topic and database if a conflicting row may have been published",
+                    file=sys.stderr,
+                )
                 return 5
             print(f"Acknowledged {acknowledged} deliveries")
             return 0
@@ -117,9 +121,6 @@ def main() -> int:
     except StaleCheckpoint as exc:
         print(f"Stale checkpoint: {exc}", file=sys.stderr)
         return 4
-    except PublicationUncertain as exc:
-        print(f"Publication uncertain: {exc}", file=sys.stderr)
-        return 5
     except KafkaException as exc:
         print(f"Kafka operation failed: {exc}", file=sys.stderr)
         return 5

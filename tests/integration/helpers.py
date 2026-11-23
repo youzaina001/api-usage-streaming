@@ -6,6 +6,7 @@ from base64 import urlsafe_b64decode
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from time import monotonic, sleep
+from typing import Any
 from uuid import UUID, uuid4
 
 import psycopg
@@ -14,6 +15,7 @@ from confluent_kafka import (
     KafkaError,
     KafkaException,
     Message,
+    Producer,
     TopicCollection,
     TopicPartition,
 )
@@ -219,3 +221,38 @@ def read_records(demo: Demo, start: int, count: int) -> list[Message]:
         consumer.close()
     assert len(records) == count
     return records
+
+
+class FaultyProducer(Producer):
+    """Real producer with injected faults on the first requested rows."""
+
+    mode = ""
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        super().__init__(config)
+        self.requested = 0
+        self.failed: list[Callable[[KafkaError | None, Message | None], None]] = []
+        self.hidden = 0
+
+    def produce(self, *args: Any, **kwargs: Any) -> None:
+        self.requested += 1
+        if self.mode.startswith("fail-first-"):
+            # Injected: the first N rows never reach the broker and fail at flush.
+            if self.requested <= int(self.mode.removeprefix("fail-first-")):
+                self.failed.append(kwargs["on_delivery"])
+                return
+        elif self.requested == 2 and self.mode == "failed-delivery":
+            # Injected: this row never reaches the broker and fails at flush.
+            self.failed.append(kwargs["on_delivery"])
+            return
+        elif self.requested == 2 and self.mode == "lost-acknowledgement":
+            # Injected: the broker receives this row but its acknowledgement is withheld.
+            kwargs.pop("on_delivery")
+            self.hidden += 1
+        super().produce(*args, **kwargs)
+
+    def flush(self, *args: Any) -> int:
+        pending = int(super().flush(*args))
+        for callback in self.failed:
+            callback(KafkaError(KafkaError._MSG_TIMED_OUT), None)
+        return pending + self.hidden
