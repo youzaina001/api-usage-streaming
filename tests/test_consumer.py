@@ -24,6 +24,14 @@ def test_propagation_errors_are_retryable() -> None:
             _check_broker_error(KafkaError(code))
 
 
+def test_leadership_errors_are_retryable() -> None:
+    for code in (
+        KafkaError.NOT_LEADER_FOR_PARTITION, KafkaError.LEADER_NOT_AVAILABLE,
+    ):
+        with pytest.raises(TopicUnavailable, match="topic or offset unavailable"):
+            _check_broker_error(KafkaError(code))
+
+
 def test_offset_errors_are_guard_failures_not_retries() -> None:
     for code in (KafkaError._AUTO_OFFSET_RESET, KafkaError.OFFSET_OUT_OF_RANGE):
         with pytest.raises(SourceGuardError) as raised:
@@ -89,8 +97,11 @@ def test_retry_propagation_fails_closed_when_topic_stays_missing(
 
 
 class _FlakyWatermarks:
-    def __init__(self, failures: int) -> None:
+    def __init__(
+        self, failures: int, code: int = KafkaError.UNKNOWN_TOPIC_OR_PART,
+    ) -> None:
         self.failures = failures
+        self.code = code
         self.calls = 0
 
     def get_watermark_offsets(
@@ -98,7 +109,7 @@ class _FlakyWatermarks:
     ) -> tuple[int, int]:
         self.calls += 1
         if self.calls <= self.failures:
-            raise KafkaException(KafkaError(KafkaError.UNKNOWN_TOPIC_OR_PART))
+            raise KafkaException(KafkaError(self.code))
         return 0, 7
 
 
@@ -108,6 +119,20 @@ def test_check_retries_watermark_lookup_after_topic_creation(
     _patch_clock(monkeypatch)
     partition = object.__new__(KafkaPartition)
     watermarks = _FlakyWatermarks(failures=2)
+    topic_id = uuid4()
+    monkeypatch.setattr(partition, "consumer", watermarks, raising=False)
+    monkeypatch.setattr(partition, "partition", TopicPartition("usage-test", 0), raising=False)
+    monkeypatch.setattr(partition, "_describe_topic_id", lambda: topic_id, raising=False)
+    assert partition.check(topic_id, 3) == 7
+    assert watermarks.calls == 3
+
+
+def test_check_retries_leadership_lag_during_watermark_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_clock(monkeypatch)
+    partition = object.__new__(KafkaPartition)
+    watermarks = _FlakyWatermarks(failures=2, code=KafkaError.NOT_LEADER_FOR_PARTITION)
     topic_id = uuid4()
     monkeypatch.setattr(partition, "consumer", watermarks, raising=False)
     monkeypatch.setattr(partition, "partition", TopicPartition("usage-test", 0), raising=False)
@@ -162,3 +187,18 @@ def test_check_does_not_retry_offset_out_of_range(
         partition.check(uuid4(), 3)
     assert not isinstance(raised.value, TopicUnavailable)
     assert watermarks.calls == 1
+
+
+def test_check_fails_closed_when_leadership_never_settles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_clock(monkeypatch)
+    partition = object.__new__(KafkaPartition)
+    watermarks = _FailingWatermarks(KafkaError.LEADER_NOT_AVAILABLE)
+    topic_id = uuid4()
+    monkeypatch.setattr(partition, "consumer", watermarks, raising=False)
+    monkeypatch.setattr(partition, "partition", TopicPartition("usage-test", 0), raising=False)
+    monkeypatch.setattr(partition, "_describe_topic_id", lambda: topic_id, raising=False)
+    with pytest.raises(TopicUnavailable):
+        partition.check(topic_id, 3)
+    assert watermarks.calls == 6  # attempts at t = 0, 1, 2, 3, 4, 5 with a 1s pause and a 5s deadline
