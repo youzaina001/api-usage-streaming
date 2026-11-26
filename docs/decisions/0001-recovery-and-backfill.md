@@ -23,7 +23,7 @@ Naive answers are dangerous: at-least-once delivery can double-count events, a r
 
 4. **Publishers pre-check the topic.** `publish-fixture` and `backfill` verify that the topic exists with the expected configuration before sending anything, and exit 3 otherwise, rather than waiting for a broker error mid-publish. The pre-check does not compare topic identity with the checkpoint; a replaced topic is caught later by `setup` and `consume` (Decision 2). If publication is uncertain (a row may have reached Kafka without its acknowledgement reaching the client), the command exits 5 and prints the confirmed count, which is a lower bound. An interrupted publisher exits 130 with no count at all, so after Ctrl+C the same rerun rule applies even though no lower bound is printed.
 
-5. **Exit-code contract.** 0 success; 2 invalid arguments or a rejected archive; 3 unsafe or missing source; 4 stale checkpoint; 5 operation failure or uncertain publication; 6 consume deadline reached; 130 interrupted with Ctrl+C. The [README exit-code table](../../README.md#exit-codes) is the canonical reference.
+5. **Exit-code contract.** 0 success; 2 invalid arguments or a rejected archive; 3 unsafe or missing source; 4 stale checkpoint; 5 operation failure or uncertain publication; 6 consume deadline reached; 130 interrupted with Ctrl+C. The [exit-code table in the command reference](../cli.md#exit-codes) is the canonical reference.
 
 6. **Private recovery hooks for tests.** `_seams.py` exposes `fetched`, `before_commit`, and `after_commit` synchronization points that only tests install, so recovery races can be exercised deterministically in child processes without changing production behavior.
 
