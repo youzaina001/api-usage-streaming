@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -68,6 +69,22 @@ class Demo:
 def demo() -> Demo:
     if os.environ.get("USAGE_TEST_INTEGRATION") != "1":
         pytest.skip("Set USAGE_TEST_INTEGRATION=1 against a disposable Compose stack.")
+    return fresh_demo()
+
+
+@pytest.fixture
+def children() -> Iterator[list[subprocess.Popen[str]]]:
+    """Own every child process a test starts, and kill and reap any still running."""
+    owned: list[subprocess.Popen[str]] = []
+    yield owned
+    for child in owned:
+        if child.poll() is None:
+            child.kill()
+        child.communicate(timeout=10)
+
+
+def fresh_demo() -> Demo:
+    """Create a new topic name and a new initialized database on the running stack."""
     key = uuid4().hex
     broker = os.environ.get("USAGE_BROKER", "127.0.0.1:19092")
     port = os.environ.get("USAGE_POSTGRES_PORT", "15432")

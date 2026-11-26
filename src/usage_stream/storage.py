@@ -8,6 +8,7 @@ from psycopg import Connection, IsolationLevel
 from psycopg.pq import TransactionStatus
 from psycopg.rows import TupleRow
 
+from . import _seams
 from .events import InvalidEvent, decode_event
 
 Outcome = Literal["accepted", "duplicate", "conflict", "invalid"]
@@ -91,6 +92,9 @@ class Storage:
                 self.conn.execute("""
                     UPDATE ops.consumer_checkpoint SET next_offset = %s WHERE pipeline_id = %s
                 """, (next_offset, pipeline_id))
+                _seams.reached("before_commit", next_offset)
+        if deliveries:
+            _seams.reached("after_commit", next_offset)
         return next_offset
 
     def _record_delivery(self, delivery: Delivery) -> None:

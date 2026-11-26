@@ -2,13 +2,20 @@ import argparse
 import os
 import sys
 from math import isfinite
+from pathlib import Path
 
 import psycopg
 from confluent_kafka import KafkaException
 from psycopg.conninfo import make_conninfo
 
 from .consumer import IngestionTimeout, KafkaPartition, consume, setup
-from .source import fixture_deliveries, publish
+from .source import (
+    ArchiveError,
+    PublicationUncertain,
+    fixture_deliveries,
+    publish,
+    read_archive,
+)
 from .storage import SourceGuardError, StaleCheckpoint, Storage
 
 
@@ -17,6 +24,15 @@ def _demo_dsn(role: str, password: str) -> str:
         host="127.0.0.1", port=os.environ.get("USAGE_POSTGRES_PORT") or "15432",
         dbname="usage", user=role, password=password,
     )
+
+
+def _require_existing_topic(broker: str, topic: str, pipeline: str) -> None:
+    """Refuse to publish into a missing or incompatible topic (exit 3 via SourceGuardError)."""
+    partition = KafkaPartition(broker, topic, pipeline)
+    try:
+        partition.provision(create=False)
+    finally:
+        partition.close()
 
 
 def main() -> int:
@@ -34,6 +50,9 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("setup")
     commands.add_parser("publish-fixture")
+    backfill_args = commands.add_parser("backfill")
+    backfill_args.add_argument("--file", type=Path, required=True)
+    backfill_args.add_argument("--manifest", type=Path, required=True)
     consume_args = commands.add_parser("consume")
     consume_args.add_argument("--until-high-watermark", action="store_true")
     consume_args.add_argument("--timeout-seconds", type=float)
@@ -51,7 +70,30 @@ def main() -> int:
 
     try:
         if args.command == "publish-fixture":
-            acknowledged = publish(args.broker, args.topic, fixture_deliveries())
+            _require_existing_topic(args.broker, args.topic, args.pipeline)
+            try:
+                acknowledged = publish(args.broker, args.topic, fixture_deliveries())
+            except PublicationUncertain as exc:
+                print(
+                    f"Publication uncertain: {exc}; rerun the whole fixture, or rebuild into a "
+                    "new topic and database if a conflicting row may have been published",
+                    file=sys.stderr,
+                )
+                return 5
+            print(f"Acknowledged {acknowledged} deliveries")
+            return 0
+        if args.command == "backfill":
+            try:
+                deliveries = read_archive(args.file, args.manifest)
+            except (ArchiveError, OSError) as exc:
+                print(f"Archive rejected: {exc}", file=sys.stderr)
+                return 2
+            _require_existing_topic(args.broker, args.topic, args.pipeline)
+            try:
+                acknowledged = publish(args.broker, args.topic, deliveries)
+            except PublicationUncertain as exc:
+                print(f"Publication uncertain: {exc}; rerun the whole file", file=sys.stderr)
+                return 5
             print(f"Acknowledged {acknowledged} deliveries")
             return 0
 

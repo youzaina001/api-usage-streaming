@@ -23,10 +23,11 @@ from confluent_kafka.admin import (  # type: ignore[attr-defined]
 )
 from psycopg import sql
 
-from usage_stream import cli, consumer
+from usage_stream import cli, consumer, source
 from usage_stream.storage import Delivery, SourceGuardError, Storage
 
 from .conftest import FIXTURES, ROOT, TOPIC_CONFIG, Demo
+from .helpers import FaultyProducer, checked, snapshot, state, watermarks
 
 
 def call_cli(demo: Demo, monkeypatch: pytest.MonkeyPatch, *args: str) -> int:
@@ -134,6 +135,38 @@ def test_fixture_cli_preserves_delivery_order_across_batches(demo: Demo) -> None
             fixture_deliveries(), strict=True,
         ))
     ]
+
+
+def test_publish_fixture_into_missing_topic_exits_3(demo: Demo) -> None:
+    checked(demo.cli("setup"))
+    result = demo.cli("--topic", f"{demo.topic}-missing", "publish-fixture")
+    assert result.returncode == 3
+    assert "Source guard: " in result.stderr
+
+
+def test_rerun_cannot_replace_a_conflicting_row_that_landed_first(
+    demo: Demo, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The fixture's row 3 conflicts with row 0 for the same event ID (11 vs 10 input tokens).
+    # If rows 0-2 never reach the broker but row 3 does, the conflicting fact wins and a
+    # rerun of the whole fixture cannot replace it, so the exit-5 hint points at a rebuild.
+    checked(demo.cli("setup"))
+    monkeypatch.setattr(FaultyProducer, "mode", "fail-first-3")
+    monkeypatch.setattr(source, "Producer", FaultyProducer)
+    assert call_cli(demo, monkeypatch, "publish-fixture") == 5
+    error = capsys.readouterr().err
+    assert "Publication uncertain: 3 of 6 deliveries confirmed" in error
+    assert "rebuild into a new topic and database" in error
+    assert watermarks(demo) == (0, 3)
+
+    monkeypatch.setattr(source, "Producer", Producer)
+    assert checked(demo.cli("publish-fixture")) == "Acknowledged 6 deliveries"
+    assert checked(demo.cli("consume", "--until-high-watermark")) == "Next offset 9"
+    days, _ = snapshot(demo)
+    by_day = {day[0]: day for day in days}
+    # 2026-11-22 input tokens are 31 (the 11-token conflicting row won), not the intended 30.
+    assert by_day["2026-11-22"][3:] == (2, 31, 6)
+    assert state(demo) == (9, 9, 3)
 
 
 def test_reporting_reader_can_query_views_only(demo: Demo) -> None:

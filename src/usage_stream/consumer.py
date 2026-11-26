@@ -1,5 +1,6 @@
 from base64 import urlsafe_b64decode
-from time import monotonic
+from collections.abc import Callable
+from time import monotonic, sleep
 from typing import cast
 from uuid import UUID
 
@@ -12,20 +13,29 @@ from confluent_kafka import (
 )
 from confluent_kafka.admin import (  # type: ignore[attr-defined]
     AdminClient,
+    ConfigEntry,
     ConfigResource,
     NewTopic,
     ResourceType,
     TopicDescription,
 )
 
+from . import _seams
 from .source import TOPIC_CONFIG
 from .storage import Checkpoint, Delivery, SourceGuardError, Storage
 
 RPC_TIMEOUT = 5.0
 POLL_WINDOW = 0.25
-SOURCE_ERRORS = {
-    KafkaError.UNKNOWN_TOPIC_OR_PART, KafkaError.UNKNOWN_TOPIC_ID, KafkaError._UNKNOWN_TOPIC,
-    KafkaError._UNKNOWN_PARTITION,
+PROPAGATION_TIMEOUT = 5.0
+PROPAGATION_PAUSE = 0.1
+LEADERSHIP_ERRORS = {
+    KafkaError.NOT_LEADER_FOR_PARTITION, KafkaError.LEADER_NOT_AVAILABLE,
+}
+PROPAGATION_ERRORS = {
+    KafkaError.UNKNOWN_TOPIC_OR_PART, KafkaError.UNKNOWN_TOPIC_ID,
+    KafkaError._UNKNOWN_TOPIC, KafkaError._UNKNOWN_PARTITION,
+}
+SOURCE_ERRORS = PROPAGATION_ERRORS | {
     KafkaError._AUTO_OFFSET_RESET, KafkaError.OFFSET_OUT_OF_RANGE,
 }
 
@@ -34,9 +44,34 @@ class IngestionTimeout(RuntimeError):
     pass
 
 
-def _check_broker_error(error: object) -> None:
-    if isinstance(error, KafkaError) and error.code() in SOURCE_ERRORS:
+class TopicUnavailable(SourceGuardError):
+    """The broker has not propagated the topic or leader yet, so retrying briefly is safe."""
+
+
+def _check_broker_error(error: object, *, include_leadership: bool = False) -> None:
+    if not isinstance(error, KafkaError):
+        return
+    code = error.code()
+    if code in PROPAGATION_ERRORS or (include_leadership and code in LEADERSHIP_ERRORS):
+        raise TopicUnavailable(f"topic or offset unavailable ({error.name()})")
+    if code in SOURCE_ERRORS:
         raise SourceGuardError(f"topic or offset unavailable ({error.name()})")
+
+
+def _retry_propagation[T](operation: Callable[[], T], timeout: float | None = None) -> T:
+    """Absorb the broker metadata lag right after a topic is created.
+
+    A topic that stays missing keeps raising TopicUnavailable until the deadline,
+    so the guard still fails closed with exit 3; only the propagation race is absorbed.
+    """
+    deadline = monotonic() + (PROPAGATION_TIMEOUT if timeout is None else timeout)
+    while True:
+        try:
+            return operation()
+        except TopicUnavailable:
+            if monotonic() >= deadline:
+                raise
+            sleep(PROPAGATION_PAUSE)
 
 
 class KafkaPartition:
@@ -59,18 +94,40 @@ class KafkaPartition:
         self.consumer.close()
 
     def _topic_id(self) -> UUID:
+        return _retry_propagation(self._describe_topic_id)
+
+    def _describe_topic_id(self) -> UUID:
         try:
             future = self.admin.describe_topics(
                 TopicCollection([self.topic]), request_timeout=RPC_TIMEOUT,
             )[self.topic]
             description = cast(TopicDescription, future.result(timeout=RPC_TIMEOUT + 1))
         except KafkaException as exc:
-            _check_broker_error(exc.args[0])
+            _check_broker_error(exc.args[0], include_leadership=True)
             raise
         topic_id = UUID(bytes=urlsafe_b64decode(f"{description.topic_id}=="))
         if not topic_id.int or [part.id for part in description.partitions] != [0]:
             raise SourceGuardError("topic must have an identity and exactly partition 0")
         return topic_id
+
+    def _configs(self, resource: ConfigResource) -> dict[str, ConfigEntry]:
+        try:
+            entries = self.admin.describe_configs(
+                [resource], request_timeout=RPC_TIMEOUT,
+            )[resource].result(timeout=RPC_TIMEOUT + 1)
+        except KafkaException as exc:
+            _check_broker_error(exc.args[0], include_leadership=True)
+            raise
+        return cast("dict[str, ConfigEntry]", entries)
+
+    def _watermarks(self) -> tuple[int, int]:
+        try:
+            return self.consumer.get_watermark_offsets(
+                self.partition, timeout=RPC_TIMEOUT, cached=False,
+            )
+        except KafkaException as exc:
+            _check_broker_error(exc.args[0], include_leadership=True)
+            raise
 
     def provision(self, *, create: bool) -> UUID:
         if create:
@@ -84,25 +141,13 @@ class KafkaPartition:
                     raise
         topic_id = self._topic_id()
         resource = ConfigResource(ResourceType.TOPIC, self.topic)
-        try:
-            entries = self.admin.describe_configs(
-                [resource], request_timeout=RPC_TIMEOUT,
-            )[resource].result(timeout=RPC_TIMEOUT + 1)
-        except KafkaException as exc:
-            _check_broker_error(exc.args[0])
-            raise
+        entries = _retry_propagation(lambda: self._configs(resource))
         if any(entries[key].value != value for key, value in TOPIC_CONFIG.items()):
             raise SourceGuardError("topic retention or timestamp configuration is incompatible")
         return topic_id
 
     def check(self, topic_id: UUID, cursor: int, last_offset: int | None = None) -> int:
-        try:
-            low, high = self.consumer.get_watermark_offsets(
-                self.partition, timeout=RPC_TIMEOUT, cached=False,
-            )
-        except KafkaException as exc:
-            _check_broker_error(exc.args[0])
-            raise
+        low, high = _retry_propagation(self._watermarks)
         # On the standalone broker, describe after fetch and bounds before labeling the batch.
         if self._topic_id() != topic_id:
             raise SourceGuardError("topic identity changed")
@@ -155,6 +200,7 @@ def consume(
             raise IngestionTimeout(f"consume timed out at offset {cursor}")
         deliveries = source.poll(topic_id, batch_size, min(POLL_WINDOW, remaining))
         if deliveries:
+            _seams.reached("fetched", deliveries[-1].offset)
             source.check(topic_id, cursor, deliveries[-1].offset)
             if deadline is not None and monotonic() >= deadline:
                 raise IngestionTimeout(f"consume timed out at offset {cursor}")
