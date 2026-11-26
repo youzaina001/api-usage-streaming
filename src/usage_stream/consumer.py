@@ -28,16 +28,15 @@ RPC_TIMEOUT = 5.0
 POLL_WINDOW = 0.25
 PROPAGATION_TIMEOUT = 5.0
 PROPAGATION_PAUSE = 0.1
-SOURCE_ERRORS = {
-    KafkaError.UNKNOWN_TOPIC_OR_PART, KafkaError.UNKNOWN_TOPIC_ID, KafkaError._UNKNOWN_TOPIC,
-    KafkaError._UNKNOWN_PARTITION,
+LEADERSHIP_ERRORS = {
     KafkaError.NOT_LEADER_FOR_PARTITION, KafkaError.LEADER_NOT_AVAILABLE,
-    KafkaError._AUTO_OFFSET_RESET, KafkaError.OFFSET_OUT_OF_RANGE,
 }
 PROPAGATION_ERRORS = {
     KafkaError.UNKNOWN_TOPIC_OR_PART, KafkaError.UNKNOWN_TOPIC_ID,
     KafkaError._UNKNOWN_TOPIC, KafkaError._UNKNOWN_PARTITION,
-    KafkaError.NOT_LEADER_FOR_PARTITION, KafkaError.LEADER_NOT_AVAILABLE,
+}
+SOURCE_ERRORS = PROPAGATION_ERRORS | {
+    KafkaError._AUTO_OFFSET_RESET, KafkaError.OFFSET_OUT_OF_RANGE,
 }
 
 
@@ -46,13 +45,16 @@ class IngestionTimeout(RuntimeError):
 
 
 class TopicUnavailable(SourceGuardError):
-    """The broker has not propagated the topic yet, so retrying briefly is safe."""
+    """The broker has not propagated the topic or leader yet, so retrying briefly is safe."""
 
 
-def _check_broker_error(error: object) -> None:
-    if isinstance(error, KafkaError) and error.code() in SOURCE_ERRORS:
-        if error.code() in PROPAGATION_ERRORS:
-            raise TopicUnavailable(f"topic or offset unavailable ({error.name()})")
+def _check_broker_error(error: object, *, include_leadership: bool = False) -> None:
+    if not isinstance(error, KafkaError):
+        return
+    code = error.code()
+    if code in PROPAGATION_ERRORS or (include_leadership and code in LEADERSHIP_ERRORS):
+        raise TopicUnavailable(f"topic or offset unavailable ({error.name()})")
+    if code in SOURCE_ERRORS:
         raise SourceGuardError(f"topic or offset unavailable ({error.name()})")
 
 
@@ -101,7 +103,7 @@ class KafkaPartition:
             )[self.topic]
             description = cast(TopicDescription, future.result(timeout=RPC_TIMEOUT + 1))
         except KafkaException as exc:
-            _check_broker_error(exc.args[0])
+            _check_broker_error(exc.args[0], include_leadership=True)
             raise
         topic_id = UUID(bytes=urlsafe_b64decode(f"{description.topic_id}=="))
         if not topic_id.int or [part.id for part in description.partitions] != [0]:
@@ -114,7 +116,7 @@ class KafkaPartition:
                 [resource], request_timeout=RPC_TIMEOUT,
             )[resource].result(timeout=RPC_TIMEOUT + 1)
         except KafkaException as exc:
-            _check_broker_error(exc.args[0])
+            _check_broker_error(exc.args[0], include_leadership=True)
             raise
         return cast("dict[str, ConfigEntry]", entries)
 
@@ -124,7 +126,7 @@ class KafkaPartition:
                 self.partition, timeout=RPC_TIMEOUT, cached=False,
             )
         except KafkaException as exc:
-            _check_broker_error(exc.args[0])
+            _check_broker_error(exc.args[0], include_leadership=True)
             raise
 
     def provision(self, *, create: bool) -> UUID:

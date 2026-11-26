@@ -100,7 +100,7 @@ class PerfSuite:
 
     @classmethod
     def new(cls, archive_root: Path) -> Self:
-        out = Path(os.environ.get(REPORT_ENV, str(Path(gettempdir()) / "usage-stream-perf")))
+        out = Path(os.environ.get(REPORT_ENV) or str(Path(gettempdir()) / "usage-stream-perf"))
         out.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         return cls(archive_root, out / f"results-{stamp}.json")

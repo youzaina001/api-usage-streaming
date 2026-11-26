@@ -106,7 +106,7 @@ Follows the topic, or with `--until-high-watermark` processes up to the offset c
 | 6 | Consume deadline reached (`--timeout-seconds`, bounded or follow mode); committed batches and the checkpoint are kept, so a retry resumes | `consume` |
 | 130 | Interrupted with Ctrl+C; an interrupted publisher may already have sent part of its rows | all commands |
 
-A topic created milliseconds earlier may not be visible to the broker yet, so each source-check broker lookup retries for up to five seconds before exiting 3; a topic that stays missing still fails closed.
+A topic created milliseconds earlier may not have propagated its topic metadata or partition leadership to the broker yet, so each source-check broker lookup retries those transient propagation errors for up to five seconds before exiting 3 ([ADR 0003](docs/decisions/0003-leader-propagation-retry.md)); a topic or leader that stays unavailable still fails closed.
 
 ## Source and recovery
 

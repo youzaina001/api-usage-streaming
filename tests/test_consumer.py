@@ -1,8 +1,12 @@
 """Unit tests for the source guard's broker-error classification and propagation retry."""
+from base64 import urlsafe_b64encode
+from concurrent.futures import Future
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
 from confluent_kafka import KafkaError, KafkaException, TopicPartition
+from confluent_kafka.admin import ConfigResource  # type: ignore[attr-defined]
 
 from usage_stream import consumer
 from usage_stream.consumer import (
@@ -11,6 +15,7 @@ from usage_stream.consumer import (
     _check_broker_error,
     _retry_propagation,
 )
+from usage_stream.source import TOPIC_CONFIG
 from usage_stream.storage import SourceGuardError
 
 
@@ -28,8 +33,9 @@ def test_leadership_errors_are_retryable() -> None:
     for code in (
         KafkaError.NOT_LEADER_FOR_PARTITION, KafkaError.LEADER_NOT_AVAILABLE,
     ):
+        _check_broker_error(KafkaError(code))
         with pytest.raises(TopicUnavailable, match="topic or offset unavailable"):
-            _check_broker_error(KafkaError(code))
+            _check_broker_error(KafkaError(code), include_leadership=True)
 
 
 def test_offset_errors_are_guard_failures_not_retries() -> None:
@@ -127,12 +133,16 @@ def test_check_retries_watermark_lookup_after_topic_creation(
     assert watermarks.calls == 3
 
 
+@pytest.mark.parametrize(
+    "code",
+    [KafkaError.NOT_LEADER_FOR_PARTITION, KafkaError.LEADER_NOT_AVAILABLE],
+)
 def test_check_retries_leadership_lag_during_watermark_lookup(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, code: int,
 ) -> None:
     _patch_clock(monkeypatch)
     partition = object.__new__(KafkaPartition)
-    watermarks = _FlakyWatermarks(failures=2, code=KafkaError.NOT_LEADER_FOR_PARTITION)
+    watermarks = _FlakyWatermarks(failures=2, code=code)
     topic_id = uuid4()
     monkeypatch.setattr(partition, "consumer", watermarks, raising=False)
     monkeypatch.setattr(partition, "partition", TopicPartition("usage-test", 0), raising=False)
@@ -189,12 +199,16 @@ def test_check_does_not_retry_offset_out_of_range(
     assert watermarks.calls == 1
 
 
+@pytest.mark.parametrize(
+    "code",
+    [KafkaError.NOT_LEADER_FOR_PARTITION, KafkaError.LEADER_NOT_AVAILABLE],
+)
 def test_check_fails_closed_when_leadership_never_settles(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, code: int,
 ) -> None:
     _patch_clock(monkeypatch)
     partition = object.__new__(KafkaPartition)
-    watermarks = _FailingWatermarks(KafkaError.LEADER_NOT_AVAILABLE)
+    watermarks = _FailingWatermarks(code)
     topic_id = uuid4()
     monkeypatch.setattr(partition, "consumer", watermarks, raising=False)
     monkeypatch.setattr(partition, "partition", TopicPartition("usage-test", 0), raising=False)
@@ -202,3 +216,119 @@ def test_check_fails_closed_when_leadership_never_settles(
     with pytest.raises(TopicUnavailable):
         partition.check(topic_id, 3)
     assert watermarks.calls == 6  # attempts at t = 0, 1, 2, 3, 4, 5 with a 1s pause and a 5s deadline
+
+
+class _FakeMessage:
+    def __init__(self, error: KafkaError) -> None:
+        self._error = error
+
+    def error(self) -> KafkaError:
+        return self._error
+
+
+class _FakePollConsumer:
+    def __init__(self, code: int) -> None:
+        self.code = code
+        self.calls = 0
+
+    def consume(self, batch_size: int, timeout: float) -> list[_FakeMessage]:
+        self.calls += 1
+        return [_FakeMessage(KafkaError(self.code))]
+
+
+def test_poll_raises_kafka_exception_on_leadership_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for code in (KafkaError.NOT_LEADER_FOR_PARTITION, KafkaError.LEADER_NOT_AVAILABLE):
+        partition = object.__new__(KafkaPartition)
+        poll_consumer = _FakePollConsumer(code)
+        monkeypatch.setattr(partition, "consumer", poll_consumer, raising=False)
+        with pytest.raises(KafkaException) as raised:
+            partition.poll(uuid4(), 10, 0.25)
+        assert not isinstance(raised.value, (SourceGuardError, TopicUnavailable))
+        assert raised.value.args[0].code() == code
+        assert poll_consumer.calls == 1
+
+
+def test_poll_still_raises_source_guard_error_on_source_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for code in (KafkaError.OFFSET_OUT_OF_RANGE, KafkaError.UNKNOWN_TOPIC_OR_PART):
+        partition = object.__new__(KafkaPartition)
+        poll_consumer = _FakePollConsumer(code)
+        monkeypatch.setattr(partition, "consumer", poll_consumer, raising=False)
+        with pytest.raises(SourceGuardError, match="topic or offset unavailable") as raised:
+            partition.poll(uuid4(), 10, 0.25)
+        assert isinstance(raised.value, TopicUnavailable) is (
+            code == KafkaError.UNKNOWN_TOPIC_OR_PART
+        )
+        assert poll_consumer.calls == 1
+
+
+class _FlakyAdmin:
+    def __init__(
+        self,
+        topic_id: UUID,
+        topic_errors: list[int],
+        config_errors: list[int],
+    ) -> None:
+        self.topic_id = topic_id
+        self.topic_errors = topic_errors
+        self.config_errors = config_errors
+        self.topic_calls = 0
+        self.config_calls = 0
+
+    def describe_topics(
+        self, collection: object, *, request_timeout: float,
+    ) -> dict[str, Future[object]]:
+        self.topic_calls += 1
+        future: Future[object] = Future()
+        if self.topic_calls <= len(self.topic_errors):
+            future.set_exception(KafkaException(KafkaError(self.topic_errors[self.topic_calls - 1])))
+        else:
+            encoded_id = urlsafe_b64encode(self.topic_id.bytes).decode("ascii").rstrip("=")
+            future.set_result(
+                SimpleNamespace(topic_id=encoded_id, partitions=[SimpleNamespace(id=0)]),
+            )
+        return {"usage-test": future}
+
+    def describe_configs(
+        self, resources: list[ConfigResource], *, request_timeout: float,
+    ) -> dict[ConfigResource, Future[object]]:
+        self.config_calls += 1
+        future: Future[object] = Future()
+        if self.config_calls <= len(self.config_errors):
+            future.set_exception(
+                KafkaException(KafkaError(self.config_errors[self.config_calls - 1])),
+            )
+        else:
+            future.set_result(
+                {key: SimpleNamespace(value=value) for key, value in TOPIC_CONFIG.items()},
+            )
+        return {resources[0]: future}
+
+
+def test_provision_retries_transient_leadership_and_propagation_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_clock(monkeypatch)
+    topic_id = uuid4()
+    admin = _FlakyAdmin(
+        topic_id=topic_id,
+        topic_errors=[
+            KafkaError.UNKNOWN_TOPIC_OR_PART,
+            KafkaError.NOT_LEADER_FOR_PARTITION,
+            KafkaError.LEADER_NOT_AVAILABLE,
+        ],
+        config_errors=[
+            KafkaError.UNKNOWN_TOPIC_ID,
+            KafkaError.LEADER_NOT_AVAILABLE,
+            KafkaError.NOT_LEADER_FOR_PARTITION,
+        ],
+    )
+    partition = object.__new__(KafkaPartition)
+    monkeypatch.setattr(partition, "topic", "usage-test", raising=False)
+    monkeypatch.setattr(partition, "admin", admin, raising=False)
+    assert partition.provision(create=False) == topic_id
+    assert admin.topic_calls == 4
+    assert admin.config_calls == 4

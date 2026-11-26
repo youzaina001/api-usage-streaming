@@ -21,6 +21,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import gettempdir
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT_TEST = "tests/perf/test_perf_measurements.py::test_results_report"
@@ -69,3 +72,26 @@ def test_perf_tests_collect_with_the_gate_open() -> None:
         ids = collected(result)
         assert any(id.endswith("::test_results_report") for id in ids), (expected_ids, ids)
     assert len(collected(collect_target(REPORT_TEST, "1"))) == 1
+
+
+def test_perf_output_dir_falls_back_to_tempdir_when_env_unset_or_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.perf.harness import REPORT_ENV, PerfSuite
+
+    default_dir = Path(gettempdir()) / "usage-stream-perf"
+    monkeypatch.delenv(REPORT_ENV, raising=False)
+    unset_suite = PerfSuite.new(tmp_path)
+    assert unset_suite.results_path.parent == default_dir
+    assert unset_suite.results_path.name.startswith("results-")
+    assert unset_suite.results_path.suffix == ".json"
+
+    monkeypatch.setenv(REPORT_ENV, "")
+    empty_suite = PerfSuite.new(tmp_path)
+    assert empty_suite.results_path.parent == default_dir
+
+    custom_dir = tmp_path / "custom-perf-out"
+    monkeypatch.setenv(REPORT_ENV, str(custom_dir))
+    custom_suite = PerfSuite.new(tmp_path)
+    assert custom_suite.results_path.parent == custom_dir
+    assert custom_dir.is_dir()

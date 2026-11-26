@@ -149,7 +149,7 @@ def test_rerun_cannot_replace_a_conflicting_row_that_landed_first(
 ) -> None:
     # The fixture's row 3 conflicts with row 0 for the same event ID (11 vs 10 input tokens).
     # If rows 0-2 never reach the broker but row 3 does, the conflicting fact wins and a
-    # rerun of the whole fixture cannot replace it — so the exit-5 hint points at a rebuild.
+    # rerun of the whole fixture cannot replace it, so the exit-5 hint points at a rebuild.
     checked(demo.cli("setup"))
     monkeypatch.setattr(FaultyProducer, "mode", "fail-first-3")
     monkeypatch.setattr(source, "Producer", FaultyProducer)
