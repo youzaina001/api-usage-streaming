@@ -21,7 +21,7 @@ WARMUP_EVENTS: Final = 1_000
 CONSUME_SIZES: Final = (1_000, 10_000, 50_000)
 #: Backfill scenarios: total archive rows published per run.
 BACKFILL_SIZES: Final = (10_000, 100_000)
-#: Rows per archive file: the CLI limit for one dated archive (README backfill rules).
+#: Rows per archive file: the CLI limit for one dated archive (docs/operations.md backfill rules).
 BACKFILL_SPLIT: Final = 50_000
 #: Recovery scenario: events published per run; the kill lands after the first batch.
 RECOVERY_EVENTS: Final = 2_000
